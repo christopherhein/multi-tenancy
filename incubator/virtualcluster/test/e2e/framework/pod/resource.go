@@ -23,8 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-
-	e2elog "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/log"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/log"
 )
 
 // LogPodStates logs basic info of provided pods for debugging.
@@ -50,17 +49,17 @@ func LogPodStates(pods []corev1.Pod) {
 	maxGraceW++
 
 	// Log pod info. * does space padding, - makes them left-aligned.
-	e2elog.Logf("%-[1]*[2]s %-[3]*[4]s %-[5]*[6]s %-[7]*[8]s %[9]s",
+	log.Logf("%-[1]*[2]s %-[3]*[4]s %-[5]*[6]s %-[7]*[8]s %[9]s",
 		maxPodW, "POD", maxNodeW, "NODE", maxPhaseW, "PHASE", maxGraceW, "GRACE", "CONDITIONS")
 	for _, pod := range pods {
 		grace := ""
 		if pod.DeletionGracePeriodSeconds != nil {
 			grace = fmt.Sprintf("%ds", *pod.DeletionGracePeriodSeconds)
 		}
-		e2elog.Logf("%-[1]*[2]s %-[3]*[4]s %-[5]*[6]s %-[7]*[8]s %[9]s",
+		log.Logf("%-[1]*[2]s %-[3]*[4]s %-[5]*[6]s %-[7]*[8]s %[9]s",
 			maxPodW, pod.ObjectMeta.Name, maxNodeW, pod.Spec.NodeName, maxPhaseW, pod.Status.Phase, maxGraceW, grace, pod.Status.Conditions)
 	}
-	e2elog.Logf("") // Final empty line helps for readability.
+	log.Logf("") // Final empty line helps for readability.
 }
 
 // logPodTerminationMessages logs termination messages for failing pods.  It's a short snippet (much smaller than full logs), but it often shows
@@ -69,12 +68,12 @@ func logPodTerminationMessages(pods []corev1.Pod) {
 	for _, pod := range pods {
 		for _, status := range pod.Status.InitContainerStatuses {
 			if status.LastTerminationState.Terminated != nil && len(status.LastTerminationState.Terminated.Message) > 0 {
-				e2elog.Logf("%s[%s].initContainer[%s]=%s", pod.Name, pod.Namespace, status.Name, status.LastTerminationState.Terminated.Message)
+				log.Logf("%s[%s].initContainer[%s]=%s", pod.Name, pod.Namespace, status.Name, status.LastTerminationState.Terminated.Message)
 			}
 		}
 		for _, status := range pod.Status.ContainerStatuses {
 			if status.LastTerminationState.Terminated != nil && len(status.LastTerminationState.Terminated.Message) > 0 {
-				e2elog.Logf("%s[%s].container[%s]=%s", pod.Name, pod.Namespace, status.Name, status.LastTerminationState.Terminated.Message)
+				log.Logf("%s[%s].container[%s]=%s", pod.Name, pod.Namespace, status.Name, status.LastTerminationState.Terminated.Message)
 			}
 		}
 	}
@@ -84,7 +83,7 @@ func logPodTerminationMessages(pods []corev1.Pod) {
 func DumpAllPodInfoForNamespace(c kubernetes.Interface, namespace string) {
 	pods, err := c.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		e2elog.Logf("unable to fetch pod debug info: %v", err)
+		log.Logf("unable to fetch pod debug info: %v", err)
 	}
 	LogPodStates(pods.Items)
 	logPodTerminationMessages(pods.Items)

@@ -31,7 +31,6 @@ import (
 
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
-	utilscheme "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/util/scheme"
 	util "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/util/test"
 )
 
@@ -99,7 +98,6 @@ func TestUWPCCreation(t *testing.T) {
 		},
 	}
 
-	utilscheme.Scheme.AddKnownTypePair(&v1.PriorityClass{}, &v1.PriorityClassList{})
 	for k, tc := range testcases {
 		t.Run(k, func(t *testing.T) {
 			actions, reconcileErr, err := util.RunUpwardSync(NewPriorityClassController, testTenant, tc.ExistingObjectInSuper, tc.ExistingObjectInTenant, tc.EnqueuedKey, nil)

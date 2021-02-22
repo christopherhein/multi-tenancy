@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
@@ -44,6 +45,7 @@ func (c *controller) StartUWS(stopCh <-chan struct{}) error {
 }
 
 func (c *controller) BackPopulate(key string) error {
+	ctx := context.Background()
 	pNamespace, pName, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("invalid resource key %v: %v", key, err))
@@ -64,7 +66,7 @@ func (c *controller) BackPopulate(key string) error {
 			pService.Annotations = make(map[string]string)
 		}
 		pService.Annotations[constants.LabelSuperClusterIP] = pService.Spec.ClusterIP
-		_, err = c.serviceClient.Services(pNamespace).Update(context.TODO(), pService, metav1.UpdateOptions{})
+		_, err = c.serviceClient.Services(pNamespace).Update(ctx, pService, metav1.UpdateOptions{})
 		if err != nil {
 			return err
 		}
@@ -78,14 +80,15 @@ func (c *controller) BackPopulate(key string) error {
 		return nil
 	}
 
-	vServiceObj, err := c.MultiClusterController.Get(clusterName, vNamespace, pName)
-	if err != nil {
+	vService := &v1.Service{}
+	objectKey := types.NamespacedName{Namespace: vNamespace, Name: pName}
+	if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vService); err != nil {
 		if errors.IsNotFound(err) {
 			return nil
 		}
 		return pkgerr.Wrapf(err, "could not find pService %s/%s's vService in controller cache", vNamespace, pName)
 	}
-	vService := vServiceObj.(*v1.Service)
+
 	if pService.Annotations[constants.LabelUID] != string(vService.UID) {
 		return fmt.Errorf("BackPopulated pService %s/%s delegated UID is different from updated object.", pService.Namespace, pService.Name)
 	}
@@ -105,7 +108,7 @@ func (c *controller) BackPopulate(key string) error {
 	if updatedMeta != nil {
 		newService = vService.DeepCopy()
 		newService.ObjectMeta = *updatedMeta
-		if _, err = tenantClient.CoreV1().Services(vService.Namespace).Update(context.TODO(), newService, metav1.UpdateOptions{}); err != nil {
+		if err = tenantClient.Update(ctx, newService); err != nil {
 			return fmt.Errorf("failed to back populate service %s/%s meta update for cluster %s: %v", vService.Namespace, vService.Name, clusterName, err)
 		}
 	}
@@ -115,12 +118,13 @@ func (c *controller) BackPopulate(key string) error {
 			newService = vService.DeepCopy()
 		} else {
 			// vService has been updated, let us fetch the lastest version.
-			if newService, err = tenantClient.CoreV1().Services(vService.Namespace).Get(context.TODO(), vService.Name, metav1.GetOptions{}); err != nil {
+			objectKey := types.NamespacedName{Namespace: vService.Namespace, Name: vService.Name}
+			if err = tenantClient.Get(ctx, objectKey, newService); err != nil {
 				return fmt.Errorf("failed to retrieve vService %s/%s from cluster %s: %v", vService.Namespace, vService.Name, clusterName, err)
 			}
 		}
 		newService.Status = pService.Status
-		if _, err = tenantClient.CoreV1().Services(vService.Namespace).UpdateStatus(context.TODO(), newService, metav1.UpdateOptions{}); err != nil {
+		if err = tenantClient.Status().Update(ctx, newService); err != nil {
 			return fmt.Errorf("failed to back populate service %s/%s status update for cluster %s: %v", vService.Namespace, vService.Name, clusterName, err)
 		}
 	}

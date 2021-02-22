@@ -24,11 +24,11 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/experiment/pkg/apis/cluster/v1alpha4"
 	superListers "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/experiment/pkg/client/listers/cluster/v1alpha4"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/experiment/pkg/scheduler/util"
@@ -46,7 +46,7 @@ type virtualclusterGetter struct {
 
 var _ mc.Getter = &virtualclusterGetter{}
 
-func (v *virtualclusterGetter) GetObject(namespace, name string) (runtime.Object, error) {
+func (v *virtualclusterGetter) GetObject(namespace, name string) (client.Object, error) {
 	vc, err := v.lister.VirtualClusters(namespace).Get(name)
 	if err != nil {
 		return nil, err
@@ -155,7 +155,7 @@ func (s *Scheduler) addVirtualCluster(key string, vc *v1alpha1.VirtualCluster) e
 		return err
 	}
 
-	tenantCluster, err := cluster.NewCluster(clusterName, vc.Namespace, vc.Name, string(vc.UID), &virtualclusterGetter{lister: s.virtualClusterLister}, adminKubeConfigBytes, cluster.Options{})
+	tenantCluster, err := cluster.NewCluster(context.TODO(), clusterName, vc.Namespace, vc.Name, string(vc.UID), &virtualclusterGetter{lister: s.virtualClusterLister}, adminKubeConfigBytes, cluster.Options{})
 	if err != nil {
 		return fmt.Errorf("failed to new tenant cluster %s/%s: %v", vc.Namespace, vc.Name, err)
 	}
@@ -207,7 +207,7 @@ type superclusterGetter struct {
 
 var _ mc.Getter = &superclusterGetter{}
 
-func (v *superclusterGetter) GetObject(namespace, name string) (runtime.Object, error) {
+func (v *superclusterGetter) GetObject(namespace, name string) (client.Object, error) {
 	super, err := v.lister.Clusters(namespace).Get(name)
 	if err != nil {
 		return nil, err
@@ -314,7 +314,7 @@ func (s *Scheduler) addSuperCluster(key string, super *v1alpha4.Cluster) error {
 	}
 	adminKubeConfigBytes := adminKubeConfigSecret.Data[constants.KubeconfigAdminSecretName]
 
-	superCluster, err := cluster.NewCluster("", super.Namespace, super.Name, string(super.UID), &superclusterGetter{lister: s.superClusterLister}, adminKubeConfigBytes, cluster.Options{})
+	superCluster, err := cluster.NewCluster(context.TODO(), "", super.Namespace, super.Name, string(super.UID), &superclusterGetter{lister: s.superClusterLister}, adminKubeConfigBytes, cluster.Options{})
 	if err != nil {
 		return fmt.Errorf("failed to new super cluster %s/%s: %v", super.Namespace, super.Name, err)
 	}

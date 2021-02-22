@@ -17,7 +17,9 @@ limitations under the License.
 package namespace
 
 import (
+	"context"
 	"fmt"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog"
 
@@ -81,18 +83,19 @@ func (c *controller) GetMCController() *mc.MultiClusterController {
 }
 
 func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, error) {
+	ctx := context.Background()
 	klog.Infof("reconcile namespace %s for super cluster %s", request.Name, request.ClusterName)
 	key := fmt.Sprintf("%s/%s", request.ClusterName, request.Name)
 	exists := true
-	nsObj, err := c.MultiClusterController.Get(request.ClusterName, request.Namespace, request.Name)
-	ns := nsObj.(*v1.Namespace)
-	if err != nil {
+	ns := &v1.Namespace{}
+	if err := c.MultiClusterController.Get(ctx, request.ClusterName, request.NamespacedName, ns); err != nil {
 		if !errors.IsNotFound(err) {
 			return reconciler.Result{Requeue: true}, err
 		}
 		exists = false
 	}
 
+	var err error
 	if exists {
 		if _, ok := ns.GetAnnotations()[syncerconst.LabelCluster]; !ok {
 			// this is not a namespace created by the syncer

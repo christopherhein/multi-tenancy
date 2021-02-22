@@ -41,12 +41,13 @@ func (c *controller) StartDWS(stopCh <-chan struct{}) error {
 
 // The reconcile logic for tenant master endpoints informer
 func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, error) {
-	vServiceObj, err := c.MultiClusterController.GetByObjectType(request.ClusterName, request.Namespace, request.Name, &v1.Service{})
+	ctx := context.Background()
+	vService := &v1.Service{}
+	err := c.MultiClusterController.Get(ctx, request.ClusterName, request.NamespacedName, vService)
 	if err != nil && !errors.IsNotFound(err) {
 		return reconciler.Result{Requeue: true}, fmt.Errorf("fail to query service from tenant master %s", request.ClusterName)
 	}
 	if err == nil {
-		vService := vServiceObj.(*v1.Service)
 		if vService.Spec.Selector != nil {
 			// Supermaster ep controller handles the service ep lifecycle, quit.
 			return reconciler.Result{}, nil
@@ -63,8 +64,8 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 		pExists = false
 	}
 	vExists := true
-	vEndpointsObj, err := c.MultiClusterController.Get(request.ClusterName, request.Namespace, request.Name)
-	if err != nil {
+	vEndpoints := &v1.Endpoints{}
+	if err := c.MultiClusterController.Get(ctx, request.ClusterName, request.NamespacedName, vEndpoints); err != nil {
 		if !errors.IsNotFound(err) {
 			return reconciler.Result{Requeue: true}, err
 		}
@@ -72,21 +73,19 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 	}
 
 	if vExists && !pExists {
-		vEndpoints := vEndpointsObj.(*v1.Endpoints)
-		err := c.reconcileEndpointsCreate(request.ClusterName, targetNamespace, request.UID, vEndpoints)
+		err := c.reconcileEndpointsCreate(ctx, request.ClusterName, targetNamespace, request.UID, vEndpoints)
 		if err != nil {
 			klog.Errorf("failed reconcile endpoints %s/%s CREATE of cluster %s %v", request.Namespace, request.Name, request.ClusterName, err)
 			return reconciler.Result{Requeue: true}, err
 		}
 	} else if !vExists && pExists {
-		err := c.reconcileEndpointsRemove(request.ClusterName, targetNamespace, request.UID, request.Name, pEndpoints)
+		err := c.reconcileEndpointsRemove(ctx, request.ClusterName, targetNamespace, request.UID, request.Name, pEndpoints)
 		if err != nil {
 			klog.Errorf("failed reconcile endpoints %s/%s DELETE of cluster %s %v", request.Namespace, request.Name, request.ClusterName, err)
 			return reconciler.Result{Requeue: true}, err
 		}
 	} else if vExists && pExists {
-		vEndpoints := vEndpointsObj.(*v1.Endpoints)
-		err := c.reconcileEndpointsUpdate(request.ClusterName, targetNamespace, request.UID, pEndpoints, vEndpoints)
+		err := c.reconcileEndpointsUpdate(ctx, request.ClusterName, targetNamespace, request.UID, pEndpoints, vEndpoints)
 		if err != nil {
 			klog.Errorf("failed reconcile endpoints %s/%s UPDATE of cluster %s %v", request.Namespace, request.Name, request.ClusterName, err)
 			return reconciler.Result{Requeue: true}, err
@@ -97,7 +96,7 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 	return reconciler.Result{}, nil
 }
 
-func (c *controller) reconcileEndpointsCreate(clusterName, targetNamespace, requestUID string, ep *v1.Endpoints) error {
+func (c *controller) reconcileEndpointsCreate(ctx context.Context, clusterName, targetNamespace, requestUID string, ep *v1.Endpoints) error {
 	vcName, vcNS, _, err := c.MultiClusterController.GetOwnerInfo(clusterName)
 	if err != nil {
 		return err
@@ -109,7 +108,7 @@ func (c *controller) reconcileEndpointsCreate(clusterName, targetNamespace, requ
 
 	pEndpoints := newObj.(*v1.Endpoints)
 
-	pEndpoints, err = c.endpointClient.Endpoints(targetNamespace).Create(context.TODO(), pEndpoints, metav1.CreateOptions{})
+	pEndpoints, err = c.endpointClient.Endpoints(targetNamespace).Create(ctx, pEndpoints, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
 		if pEndpoints.Annotations[constants.LabelUID] == requestUID {
 			klog.Infof("endpoints %s/%s of cluster %s already exist in super master", targetNamespace, pEndpoints.Name, clusterName)
@@ -121,7 +120,7 @@ func (c *controller) reconcileEndpointsCreate(clusterName, targetNamespace, requ
 	return err
 }
 
-func (c *controller) reconcileEndpointsUpdate(clusterName, targetNamespace, requestUID string, pEP, vEP *v1.Endpoints) error {
+func (c *controller) reconcileEndpointsUpdate(ctx context.Context, clusterName, targetNamespace, requestUID string, pEP, vEP *v1.Endpoints) error {
 	if pEP.Annotations[constants.LabelUID] != requestUID {
 		return fmt.Errorf("pEndpoints %s/%s delegated UID is different from updated object.", targetNamespace, pEP.Name)
 	}
@@ -131,7 +130,7 @@ func (c *controller) reconcileEndpointsUpdate(clusterName, targetNamespace, requ
 	}
 	updatedEndpoints := conversion.Equality(c.Config, vc).CheckEndpointsEquality(pEP, vEP)
 	if updatedEndpoints != nil {
-		pEP, err = c.endpointClient.Endpoints(targetNamespace).Update(context.TODO(), updatedEndpoints, metav1.UpdateOptions{})
+		pEP, err = c.endpointClient.Endpoints(targetNamespace).Update(ctx, updatedEndpoints, metav1.UpdateOptions{})
 		if err != nil {
 			return err
 		}
@@ -139,14 +138,14 @@ func (c *controller) reconcileEndpointsUpdate(clusterName, targetNamespace, requ
 	return nil
 }
 
-func (c *controller) reconcileEndpointsRemove(clusterName, targetNamespace, requestUID, name string, pEP *v1.Endpoints) error {
+func (c *controller) reconcileEndpointsRemove(ctx context.Context, clusterName, targetNamespace, requestUID, name string, pEP *v1.Endpoints) error {
 	if pEP.Annotations[constants.LabelUID] != requestUID {
 		return fmt.Errorf("To be deleted pEndpoints %s/%s delegated UID is different from deleted object.", targetNamespace, pEP.Name)
 	}
 	opts := &metav1.DeleteOptions{
 		PropagationPolicy: &constants.DefaultDeletionPolicy,
 	}
-	err := c.endpointClient.Endpoints(targetNamespace).Delete(context.TODO(), name, *opts)
+	err := c.endpointClient.Endpoints(targetNamespace).Delete(ctx, name, *opts)
 	if errors.IsNotFound(err) {
 		klog.Warningf("endpoints %s/%s of %s cluster not found in super master", targetNamespace, name, clusterName)
 		return nil

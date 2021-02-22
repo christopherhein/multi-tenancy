@@ -22,8 +22,10 @@ import (
 
 	v1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
@@ -40,6 +42,7 @@ func (c *controller) StartUWS(stopCh <-chan struct{}) error {
 }
 
 func (c *controller) BackPopulate(key string) error {
+	ctx := context.Background()
 	// The key format is clustername/scName.
 	clusterName, scName, _ := cache.SplitMetaNamespaceKey(key)
 
@@ -57,14 +60,14 @@ func (c *controller) BackPopulate(key string) error {
 		return fmt.Errorf("failed to create client from cluster %s config: %v", clusterName, err)
 	}
 
-	vStorageClassObj, err := c.MultiClusterController.Get(clusterName, "", scName)
-	if err != nil {
+	vStorageClass := &v1.StorageClass{}
+	objectKey := types.NamespacedName{Namespace: "", Name: scName}
+	if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vStorageClass); err != nil {
 		if errors.IsNotFound(err) {
 			if op == reconciler.AddEvent {
 				// Available in super, hence create a new in tenant master
 				vStorageClass := conversion.BuildVirtualStorageClass(clusterName, pStorageClass)
-				_, err := tenantClient.StorageV1().StorageClasses().Create(context.TODO(), vStorageClass, metav1.CreateOptions{})
-				if err != nil {
+				if err := tenantClient.Create(ctx, vStorageClass); err != nil {
 					return err
 				}
 			}
@@ -74,18 +77,17 @@ func (c *controller) BackPopulate(key string) error {
 	}
 
 	if op == reconciler.DeleteEvent {
-		opts := &metav1.DeleteOptions{
+		opts := &client.DeleteOptions{
 			PropagationPolicy: &constants.DefaultDeletionPolicy,
 		}
-		err := tenantClient.StorageV1().StorageClasses().Delete(context.TODO(), scName, *opts)
+		err := tenantClient.Delete(ctx, vStorageClass, opts)
 		if err != nil {
 			return err
 		}
 	} else {
-		updatedStorageClass := conversion.Equality(c.Config, nil).CheckStorageClassEquality(pStorageClass, vStorageClassObj.(*v1.StorageClass))
+		updatedStorageClass := conversion.Equality(c.Config, nil).CheckStorageClassEquality(pStorageClass, vStorageClass)
 		if updatedStorageClass != nil {
-			_, err := tenantClient.StorageV1().StorageClasses().Update(context.TODO(), updatedStorageClass, metav1.UpdateOptions{})
-			if err != nil {
+			if err := tenantClient.Update(ctx, updatedStorageClass); err != nil {
 				return err
 			}
 		}

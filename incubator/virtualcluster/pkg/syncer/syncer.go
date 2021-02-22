@@ -29,7 +29,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -42,6 +41,7 @@ import (
 	"k8s.io/klog"
 
 	"k8s.io/apimachinery/pkg/util/sets"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
 	vcclient "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/clientset/versioned"
 	vcinformers "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/informers/externalversions/tenancy/v1alpha1"
@@ -87,7 +87,7 @@ type virtualclusterGetter struct {
 
 var _ mc.Getter = &virtualclusterGetter{}
 
-func (v *virtualclusterGetter) GetObject(namespace, name string) (runtime.Object, error) {
+func (v *virtualclusterGetter) GetObject(namespace, name string) (client.Object, error) {
 	vc, err := v.lister.VirtualClusters(namespace).Get(name)
 	if err != nil {
 		return nil, err
@@ -357,7 +357,7 @@ func (s *Syncer) addCluster(key string, vc *v1alpha1.VirtualCluster) error {
 	if err != nil {
 		return err
 	}
-	tenantCluster, err := cluster.NewCluster(clusterName, vc.Namespace, vc.Name, string(vc.UID), &virtualclusterGetter{lister: s.lister}, adminKubeConfigBytes, cluster.Options{})
+	tenantCluster, err := cluster.NewCluster(context.TODO(), clusterName, vc.Namespace, vc.Name, string(vc.UID), &virtualclusterGetter{lister: s.lister}, adminKubeConfigBytes, cluster.Options{})
 	if err != nil {
 		return fmt.Errorf("failed to new tenant cluster %s/%s: %v", vc.Namespace, vc.Name, err)
 	}

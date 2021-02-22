@@ -16,6 +16,7 @@ limitations under the License.
 package endpoints
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -47,6 +48,7 @@ func (c *controller) StartPatrol(stopCh <-chan struct{}) error {
 // keep consistency.
 // Note that eps are managed by tenant/super ep controller separately. The checker will not do GC but only report diff.
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.Infof("tenant masters has no clusters, give up period checker")
@@ -61,7 +63,7 @@ func (c *controller) PatrollerDo() {
 		wg.Add(1)
 		go func(clusterName string) {
 			defer wg.Done()
-			c.checkEndPointsOfTenantCluster(clusterName)
+			c.checkEndPointsOfTenantCluster(ctx, clusterName)
 		}(clusterName)
 	}
 	wg.Wait()
@@ -70,14 +72,13 @@ func (c *controller) PatrollerDo() {
 }
 
 // checkEndPointsOfTenantCluster checks to see if endpoints controller in tenant and super master working consistently.
-func (c *controller) checkEndPointsOfTenantCluster(clusterName string) {
-	listObj, err := c.MultiClusterController.List(clusterName)
-	if err != nil {
+func (c *controller) checkEndPointsOfTenantCluster(ctx context.Context, clusterName string) {
+	epList := &v1.EndpointsList{}
+	if err := c.MultiClusterController.List(ctx, clusterName, epList); err != nil {
 		klog.Errorf("error listing endpoints from cluster %s informer cache: %v", clusterName, err)
 		return
 	}
 	klog.V(4).Infof("check endpoints consistency in cluster %s", clusterName)
-	epList := listObj.(*v1.EndpointsList)
 	for _, vEp := range epList.Items {
 		targetNamespace := conversion.ToSuperMasterNamespace(clusterName, vEp.Namespace)
 		pEp, err := c.endpointsLister.Endpoints(targetNamespace).Get(vEp.Name)

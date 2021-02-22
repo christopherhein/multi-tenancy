@@ -24,10 +24,12 @@ import (
 
 	v1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
@@ -46,6 +48,7 @@ func (c *controller) StartPatrol(stopCh <-chan struct{}) error {
 
 // ParollerDo check if PriorityClass keeps consistency between super master and tenant masters.
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.Infof("tenant masters has no clusters, give up priority class period checker")
@@ -59,7 +62,7 @@ func (c *controller) PatrollerDo() {
 		wg.Add(1)
 		go func(clusterName string) {
 			defer wg.Done()
-			c.checkPriorityClassOfTenantCluster(clusterName)
+			c.checkPriorityClassOfTenantCluster(ctx, clusterName)
 		}(clusterName)
 	}
 	wg.Wait()
@@ -75,8 +78,9 @@ func (c *controller) PatrollerDo() {
 			continue
 		}
 		for _, clusterName := range clusterNames {
-			_, err := c.MultiClusterController.Get(clusterName, "", pPriorityClass.Name)
-			if err != nil {
+
+			objectKey := types.NamespacedName{Namespace: "", Name: pPriorityClass.Name}
+			if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, &v1.PriorityClass{}); err != nil {
 				if errors.IsNotFound(err) {
 					metrics.CheckerRemedyStats.WithLabelValues("RequeuedSuperMasterPriorityClasses").Inc()
 					c.UpwardController.AddToQueue(clusterName + "/" + pPriorityClass.Name)
@@ -89,14 +93,15 @@ func (c *controller) PatrollerDo() {
 	metrics.CheckerMissMatchStats.WithLabelValues("MissMatchedPriorityClasses").Set(float64(numMissMatchedPriorityClasses))
 }
 
-func (c *controller) checkPriorityClassOfTenantCluster(clusterName string) {
-	listObj, err := c.MultiClusterController.List(clusterName)
+func (c *controller) checkPriorityClassOfTenantCluster(ctx context.Context, clusterName string) {
+	scList := &v1.PriorityClassList{}
+	err := c.MultiClusterController.List(ctx, clusterName, scList)
 	if err != nil {
 		klog.Errorf("error listing priorityclass from cluster %s informer cache: %v", clusterName, err)
 		return
 	}
 	klog.V(4).Infof("check priorityclass consistency in cluster %s", clusterName)
-	scList := listObj.(*v1.PriorityClassList)
+
 	for i, vPriorityClass := range scList.Items {
 		pPriorityClass, err := c.priorityclassLister.Get(vPriorityClass.Name)
 		if errors.IsNotFound(err) {
@@ -106,10 +111,10 @@ func (c *controller) checkPriorityClassOfTenantCluster(clusterName string) {
 				klog.Errorf("error getting cluster %s clientset: %v", clusterName, err)
 				continue
 			}
-			opts := &metav1.DeleteOptions{
+			opts := &client.DeleteOptions{
 				PropagationPolicy: &constants.DefaultDeletionPolicy,
 			}
-			if err := tenantClient.SchedulingV1().PriorityClasses().Delete(context.TODO(), vPriorityClass.Name, *opts); err != nil {
+			if err := tenantClient.Delete(ctx, &vPriorityClass, opts); err != nil {
 				klog.Errorf("error deleting priorityclass %v in cluster %s: %v", vPriorityClass.Name, clusterName, err)
 			} else {
 				metrics.CheckerRemedyStats.WithLabelValues("DeletedOrphanTenantPriorityClasses").Inc()

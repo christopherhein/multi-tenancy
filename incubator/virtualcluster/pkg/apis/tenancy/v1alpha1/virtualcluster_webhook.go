@@ -24,11 +24,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
-	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
-var vclog = logf.Log.WithName("virtualcluster-webhook")
+var vclog = ctrl.Log.WithName("virtualcluster-webhook")
 
 func (vc *VirtualCluster) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	vclog.Info("setup virtualcluster validation webhook")

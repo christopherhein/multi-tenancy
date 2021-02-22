@@ -25,23 +25,38 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"k8s.io/apiserver/pkg/server/healthz"
-	"k8s.io/apiserver/pkg/util/term"
+	"k8s.io/apimachinery/pkg/runtime"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/leaderelection"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
+	"k8s.io/component-base/term"
 	"k8s.io/klog"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 
-	syncerconfig "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/cmd/syncer/app/config"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	syncerconfig "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/cmd/syncer/app/config/v1alpha1"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/cmd/syncer/app/config/v1alpha2"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/cmd/syncer/app/options"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/controllers"
 	utilflag "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/util/flag"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/version/verflag"
 )
 
+var (
+	scheme   = runtime.NewScheme()
+	setupLog = ctrl.Log.WithName("setup")
+)
+
+func init() {
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+}
+
 func NewSyncerCommand(stopChan <-chan struct{}) *cobra.Command {
-	s, err := options.NewResourceSyncerOptions()
+	s, err := options.NewOptions(scheme)
 	if err != nil {
 		klog.Fatalf("unable to initialize command options: %v", err)
 	}
@@ -54,18 +69,47 @@ custom resources on behalf of the tenant users in super master, following the
 resource isolation policy specified in Tenant CRD.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			var err error
-			var c *syncerconfig.Config
+			var c *v1alpha2.ResourceSyncerConfiguration
 			verflag.PrintAndExitIfRequested()
 			utilflag.PrintFlags(cmd.Flags())
 
-			c, err = s.Config()
+			options := ctrl.Options{Scheme: scheme}
+			if s.ConfigFile != "" {
+				options, err = options.AndFrom(ctrl.ConfigFile().AtPath(s.ConfigFile).OfKind(c))
+				if err != nil {
+					setupLog.Error(err, "unable to load the config file")
+					os.Exit(1)
+				}
+			}
+
+			mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "%v\n", err)
+				setupLog.Error(err, "unable to start manager")
 				os.Exit(1)
 			}
 
-			if err := Run(c.Complete(), stopChan); err != nil {
-				fmt.Fprintf(os.Stderr, "%v\n", err)
+			if err = (&controllers.VirtualClusterReconciler{
+				Client: mgr.GetClient(),
+				Log:    ctrl.Log.WithName("controllers").WithName("VirtualCluster"),
+				Scheme: mgr.GetScheme(),
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "VirtualCluster")
+				os.Exit(1)
+			}
+			//+kubebuilder:scaffold:builder
+
+			if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+				setupLog.Error(err, "unable to set up health check")
+				os.Exit(1)
+			}
+			if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+				setupLog.Error(err, "unable to set up ready check")
+				os.Exit(1)
+			}
+
+			setupLog.Info("starting manager")
+			if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+				setupLog.Error(err, "problem running manager")
 				os.Exit(1)
 			}
 		},
@@ -94,7 +138,9 @@ resource isolation policy specified in Tenant CRD.`,
 	return cmd
 }
 
+// Run will start the syncer and webservers for metrics, webhooks and profiling
 func Run(cc *syncerconfig.CompletedConfig, stopCh <-chan struct{}) error {
+
 	ss, err := syncer.New(&cc.ComponentConfig,
 		cc.SuperClient,
 		cc.VirtualClusterClient,
@@ -160,6 +206,9 @@ func startSyncer(ctx context.Context, s syncer.Bootstrap, cc *syncerconfig.Compl
 		s.Run(stopCh)
 		go func() {
 			s.ListenAndServe(net.JoinHostPort(cc.Address, cc.Port), cc.CertFile, cc.KeyFile)
+		}()
+		go func() {
+			// Start webhook server
 		}()
 		go func() {
 			// start a pprof http server

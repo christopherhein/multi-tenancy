@@ -41,6 +41,7 @@ func (c *controller) StartDWS(stopCh <-chan struct{}) error {
 
 // The reconcile logic for tenant master pvc informer
 func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, error) {
+	ctx := context.Background()
 	klog.V(4).Infof("reconcile pvc %s/%s event for cluster %s", request.Namespace, request.Name, request.ClusterName)
 
 	targetNamespace := conversion.ToSuperMasterNamespace(request.ClusterName, request.Namespace)
@@ -53,8 +54,8 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 		pExists = false
 	}
 	vExists := true
-	vPVCObj, err := c.MultiClusterController.Get(request.ClusterName, request.Namespace, request.Name)
-	if err != nil {
+	vPVC := &v1.PersistentVolumeClaim{}
+	if err := c.MultiClusterController.Get(ctx, request.ClusterName, request.NamespacedName, vPVC); err != nil {
 		if !errors.IsNotFound(err) {
 			return reconciler.Result{Requeue: true}, err
 		}
@@ -62,21 +63,19 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 	}
 
 	if vExists && !pExists {
-		vPVC := vPVCObj.(*v1.PersistentVolumeClaim)
-		err := c.reconcilePVCCreate(request.ClusterName, targetNamespace, request.UID, vPVC)
+		err := c.reconcilePVCCreate(ctx, request.ClusterName, targetNamespace, request.UID, vPVC)
 		if err != nil {
 			klog.Errorf("failed reconcile pvc %s/%s CREATE of cluster %s %v", request.Namespace, request.Name, request.ClusterName, err)
 			return reconciler.Result{Requeue: true}, err
 		}
 	} else if !vExists && pExists {
-		err := c.reconcilePVCRemove(request.ClusterName, targetNamespace, request.UID, request.Name, pPVC)
+		err := c.reconcilePVCRemove(ctx, request.ClusterName, targetNamespace, request.UID, request.Name, pPVC)
 		if err != nil {
 			klog.Errorf("failed reconcile pvc %s/%s DELETE of cluster %s %v", request.Namespace, request.Name, request.ClusterName, err)
 			return reconciler.Result{Requeue: true}, err
 		}
 	} else if vExists && pExists {
-		vPVC := vPVCObj.(*v1.PersistentVolumeClaim)
-		err := c.reconcilePVCUpdate(request.ClusterName, targetNamespace, request.UID, pPVC, vPVC)
+		err := c.reconcilePVCUpdate(ctx, request.ClusterName, targetNamespace, request.UID, pPVC, vPVC)
 		if err != nil {
 			klog.Errorf("failed reconcile pvc %s/%s UPDATE of cluster %s %v", request.Namespace, request.Name, request.ClusterName, err)
 			return reconciler.Result{Requeue: true}, err
@@ -87,7 +86,7 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 	return reconciler.Result{}, nil
 }
 
-func (c *controller) reconcilePVCCreate(clusterName, targetNamespace, requestUID string, pvc *v1.PersistentVolumeClaim) error {
+func (c *controller) reconcilePVCCreate(ctx context.Context, clusterName, targetNamespace, requestUID string, pvc *v1.PersistentVolumeClaim) error {
 	vcName, vcNS, _, err := c.MultiClusterController.GetOwnerInfo(clusterName)
 	if err != nil {
 		return err
@@ -99,7 +98,7 @@ func (c *controller) reconcilePVCCreate(clusterName, targetNamespace, requestUID
 
 	pPVC := newObj.(*v1.PersistentVolumeClaim)
 
-	pPVC, err = c.pvcClient.PersistentVolumeClaims(targetNamespace).Create(context.TODO(), pPVC, metav1.CreateOptions{})
+	pPVC, err = c.pvcClient.PersistentVolumeClaims(targetNamespace).Create(ctx, pPVC, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
 		if pPVC.Annotations[constants.LabelUID] == requestUID {
 			klog.Infof("pvc %s/%s of cluster %s already exist in super master", targetNamespace, pPVC.Name, clusterName)
@@ -111,7 +110,7 @@ func (c *controller) reconcilePVCCreate(clusterName, targetNamespace, requestUID
 	return err
 }
 
-func (c *controller) reconcilePVCUpdate(clusterName, targetNamespace, requestUID string, pPVC, vPVC *v1.PersistentVolumeClaim) error {
+func (c *controller) reconcilePVCUpdate(ctx context.Context, clusterName, targetNamespace, requestUID string, pPVC, vPVC *v1.PersistentVolumeClaim) error {
 	if pPVC.Annotations[constants.LabelUID] != requestUID {
 		return fmt.Errorf("pPVC %s/%s delegated UID is different from updated object.", targetNamespace, pPVC.Name)
 	}
@@ -121,7 +120,7 @@ func (c *controller) reconcilePVCUpdate(clusterName, targetNamespace, requestUID
 	}
 	updatedPVC := conversion.Equality(c.Config, vc).CheckPVCEquality(pPVC, vPVC)
 	if updatedPVC != nil {
-		pPVC, err = c.pvcClient.PersistentVolumeClaims(targetNamespace).Update(context.TODO(), updatedPVC, metav1.UpdateOptions{})
+		pPVC, err = c.pvcClient.PersistentVolumeClaims(targetNamespace).Update(ctx, updatedPVC, metav1.UpdateOptions{})
 		if err != nil {
 			return err
 		}
@@ -129,14 +128,14 @@ func (c *controller) reconcilePVCUpdate(clusterName, targetNamespace, requestUID
 	return nil
 }
 
-func (c *controller) reconcilePVCRemove(clusterName, targetNamespace, requestUID, name string, pPVC *v1.PersistentVolumeClaim) error {
+func (c *controller) reconcilePVCRemove(ctx context.Context, clusterName, targetNamespace, requestUID, name string, pPVC *v1.PersistentVolumeClaim) error {
 	if pPVC.Annotations[constants.LabelUID] != requestUID {
 		return fmt.Errorf("To be deleted pPVC %s/%s delegated UID is different from deleted object.", targetNamespace, pPVC.Name)
 	}
 	opts := &metav1.DeleteOptions{
 		PropagationPolicy: &constants.DefaultDeletionPolicy,
 	}
-	err := c.pvcClient.PersistentVolumeClaims(targetNamespace).Delete(context.TODO(), name, *opts)
+	err := c.pvcClient.PersistentVolumeClaims(targetNamespace).Delete(ctx, name, *opts)
 	if errors.IsNotFound(err) {
 		klog.Warningf("pvc %s/%s of cluster %s not found in super master", targetNamespace, name, clusterName)
 		return nil

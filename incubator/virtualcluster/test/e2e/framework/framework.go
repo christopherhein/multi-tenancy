@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	vcclient "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/clientset/versioned"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/log"
 	e2elog "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/log"
 	e2epod "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/pod"
 	e2evc "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/virtualcluster"
@@ -173,15 +174,15 @@ func (f *Framework) AfterEach() {
 					if !apierrs.IsNotFound(err) {
 						nsDeletionErrors[ns.Name] = err
 					} else {
-						e2elog.Logf("Namespace %v was already deleted", ns.Name)
+						log.Logf("Namespace %v was already deleted", ns.Name)
 					}
 				}
 			}
 		} else {
 			if !TestContext.DeleteNamespace {
-				e2elog.Logf("Found DeleteNamespace=false, skipping namespace deletion!")
+				log.Logf("Found DeleteNamespace=false, skipping namespace deletion!")
 			} else {
-				e2elog.Logf("Found DeleteNamespaceOnFailure=false and current test failed, skipping namespace deletion!")
+				log.Logf("Found DeleteNamespaceOnFailure=false and current test failed, skipping namespace deletion!")
 			}
 		}
 
@@ -221,7 +222,7 @@ func deleteNS(c clientset.Interface, dynamicClient dynamic.Interface, namespace 
 			if apierrs.IsNotFound(err) {
 				return true, nil
 			}
-			e2elog.Logf("Error while waiting for namespace to be terminated: %v", err)
+			log.Logf("Error while waiting for namespace to be terminated: %v", err)
 			return false, nil
 		}
 		return false, nil
@@ -264,7 +265,7 @@ func deleteNS(c clientset.Interface, dynamicClient dynamic.Interface, namespace 
 		// no remaining content, but namespace was not deleted (namespace controller is probably wedged)
 		return fmt.Errorf("namespace %v was not deleted with limit: %v, namespace is empty but is not yet removed", namespace, err)
 	}
-	e2elog.Logf("namespace %v deletion completed in %s", namespace, time.Since(startTime))
+	log.Logf("namespace %v deletion completed in %s", namespace, time.Since(startTime))
 	return nil
 }
 
@@ -300,7 +301,7 @@ func countRemainingPods(c clientset.Interface, namespace string) (int, int, erro
 func logNamespaces(c clientset.Interface, namespace string) {
 	namespaceList, err := c.CoreV1().Namespaces().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		e2elog.Logf("namespace: %v, unable to list namespaces: %v", namespace, err)
+		log.Logf("namespace: %v, unable to list namespaces: %v", namespace, err)
 		return
 	}
 
@@ -313,7 +314,7 @@ func logNamespaces(c clientset.Interface, namespace string) {
 			numTerminating++
 		}
 	}
-	e2elog.Logf("namespace: %v, total namespaces: %v, active: %v, terminating: %v", namespace, len(namespaceList.Items), numActive, numTerminating)
+	log.Logf("namespace: %v, total namespaces: %v, active: %v, terminating: %v", namespace, len(namespaceList.Items), numActive, numTerminating)
 }
 
 // logNamespace logs detail about a namespace
@@ -321,13 +322,13 @@ func logNamespace(c clientset.Interface, namespace string) {
 	ns, err := c.CoreV1().Namespaces().Get(context.TODO(), namespace, metav1.GetOptions{})
 	if err != nil {
 		if apierrs.IsNotFound(err) {
-			e2elog.Logf("namespace: %v no longer exists", namespace)
+			log.Logf("namespace: %v no longer exists", namespace)
 			return
 		}
-		e2elog.Logf("namespace: %v, unable to get namespace due to error: %v", namespace, err)
+		log.Logf("namespace: %v, unable to get namespace due to error: %v", namespace, err)
 		return
 	}
-	e2elog.Logf("namespace: %v, DeletionTimetamp: %v, Finalizers: %v, Phase: %v", ns.Name, ns.DeletionTimestamp, ns.Spec.Finalizers, ns.Status.Phase)
+	log.Logf("namespace: %v, DeletionTimetamp: %v, Finalizers: %v, Phase: %v", ns.Name, ns.DeletionTimestamp, ns.Spec.Finalizers, ns.Status.Phase)
 }
 
 // isDynamicDiscoveryError returns true if the error is a group discovery error
@@ -347,7 +348,7 @@ func isDynamicDiscoveryError(err error) bool {
 		case "metrics.k8s.io":
 			// aggregated metrics server add-on, no persisted resources
 		default:
-			e2elog.Logf("discovery error for unexpected group: %#v", gv)
+			log.Logf("discovery error for unexpected group: %#v", gv)
 			return false
 		}
 	}
@@ -386,13 +387,13 @@ func hasRemainingContent(c clientset.Interface, dynamicClient dynamic.Interface,
 		dynamicClient := dynamicClient.Resource(gvr).Namespace(namespace)
 		if err != nil {
 			// not all resource types support list, so some errors here are normal depending on the resource type.
-			e2elog.Logf("namespace: %s, unable to get client - gvr: %v, error: %v", namespace, gvr, err)
+			log.Logf("namespace: %s, unable to get client - gvr: %v, error: %v", namespace, gvr, err)
 			continue
 		}
 		// get the api resource
 		apiResource := metav1.APIResource{Name: gvr.Resource, Namespaced: true}
 		if ignoredResources.Has(gvr.Resource) {
-			e2elog.Logf("namespace: %s, resource: %s, ignored listing per whitelist", namespace, apiResource.Name)
+			log.Logf("namespace: %s, resource: %s, ignored listing per whitelist", namespace, apiResource.Name)
 			continue
 		}
 		unstructuredList, err := dynamicClient.List(context.TODO(), metav1.ListOptions{})
@@ -408,7 +409,7 @@ func hasRemainingContent(c clientset.Interface, dynamicClient dynamic.Interface,
 			return false, err
 		}
 		if len(unstructuredList.Items) > 0 {
-			e2elog.Logf("namespace: %s, resource: %s, items remaining: %v", namespace, apiResource.Name, len(unstructuredList.Items))
+			log.Logf("namespace: %s, resource: %s, items remaining: %v", namespace, apiResource.Name, len(unstructuredList.Items))
 			contentRemaining = true
 		}
 	}
@@ -418,7 +419,7 @@ func hasRemainingContent(c clientset.Interface, dynamicClient dynamic.Interface,
 // waitForServerPreferredNamespacedResources waits until server preferred namespaced resources could be successfully discovered.
 // TODO: Fix https://github.com/kubernetes/kubernetes/issues/55768 and remove the following retry.
 func waitForServerPreferredNamespacedResources(d discovery.DiscoveryInterface, timeout time.Duration) ([]*metav1.APIResourceList, error) {
-	e2elog.Logf("Waiting up to %v for server preferred namespaced resources to be successfully discovered", timeout)
+	log.Logf("Waiting up to %v for server preferred namespaced resources to be successfully discovered", timeout)
 	var resources []*metav1.APIResourceList
 	if err := wait.PollImmediate(Poll, timeout, func() (bool, error) {
 		var err error
@@ -429,7 +430,7 @@ func waitForServerPreferredNamespacedResources(d discovery.DiscoveryInterface, t
 		if !discovery.IsGroupDiscoveryFailedError(err) {
 			return false, err
 		}
-		e2elog.Logf("Error discoverying server preferred namespaced resources: %v, retrying in %v.", err, Poll)
+		log.Logf("Error discoverying server preferred namespaced resources: %v, retrying in %v.", err, Poll)
 		return false, nil
 	}); err != nil {
 		return nil, err

@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
@@ -41,7 +42,7 @@ import (
 	componentbaseconfig "k8s.io/component-base/config"
 	"k8s.io/klog"
 
-	syncerappconfig "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/cmd/syncer/app/config"
+	syncerappconfig "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/cmd/syncer/app/config/v1alpha1"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis"
 	vcclient "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/clientset/versioned"
 	vcinformers "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/informers/externalversions"
@@ -53,6 +54,7 @@ import (
 // ResourceSyncerOptions is the main context object for the resource syncer.
 type ResourceSyncerOptions struct {
 	// The syncer configuration.
+	ConfigFile      string
 	ComponentConfig syncerconfig.SyncerConfiguration
 
 	SuperMaster           string
@@ -65,7 +67,18 @@ type ResourceSyncerOptions struct {
 }
 
 // NewResourceSyncerOptions creates a new resource syncer with a default config.
-func NewResourceSyncerOptions() (*ResourceSyncerOptions, error) {
+func NewOptions(scheme *runtime.Scheme) (*ResourceSyncerOptions, error) {
+	// leaseDuration := time.Duration(15 * time.Second)
+	// renewDuration := time.Duration(10 * time.Second)
+	// retryPeriod := time.Duration(2 * time.Second)
+	// options := &ctrl.Options{
+	// 	Scheme:         scheme,
+	// 	LeaderElection: true,
+	// 	LeaseDuration:  &leaseDuration,
+	// 	RenewDeadline:  &renewDeadline,
+	// 	RetryPeriod:    &retryPeriod,
+	// }
+
 	return &ResourceSyncerOptions{
 		ComponentConfig: syncerconfig.SyncerConfiguration{
 			LeaderElection: syncerconfig.SyncerLeaderElectionConfiguration{
@@ -98,6 +111,9 @@ func NewResourceSyncerOptions() (*ResourceSyncerOptions, error) {
 
 func (o *ResourceSyncerOptions) Flags() cliflag.NamedFlagSets {
 	fss := cliflag.NamedFlagSets{}
+
+	config := fss.FlagSet("config")
+	config.StringVarP(&o.ConfigFile, "config", "f", "", "The controller will load its initial configuration from this file. Omit this flag to use the default configuration values. Command-line flags override configuration from this file.")
 
 	fs := fss.FlagSet("server")
 	fs.StringVar(&o.SuperMaster, "super-master", o.SuperMaster, "The address of the super master Kubernetes API server (overrides any value in super-master-kubeconfig).")

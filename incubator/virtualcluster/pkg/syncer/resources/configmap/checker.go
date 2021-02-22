@@ -50,6 +50,7 @@ func (c *controller) StartPatrol(stopCh <-chan struct{}) error {
 // PatrollerDo checks to see if configmaps in super master informer cache and tenant master
 // keep consistency.
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.Infof("tenant masters has no clusters, give up period checker")
@@ -69,13 +70,13 @@ func (c *controller) PatrollerDo() {
 	blockedClusterSet := sets.NewString()
 	vSet := differ.NewDiffSet()
 	for _, cluster := range clusterNames {
-		listObj, err := c.MultiClusterController.List(cluster)
-		if err != nil {
+		cmList := &v1.ConfigMapList{}
+		if err := c.MultiClusterController.List(ctx, cluster, cmList); err != nil {
 			klog.Errorf("error listing configmaps from cluster %s informer cache: %v", cluster, err)
 			blockedClusterSet.Insert(cluster)
 			continue
 		}
-		cmList := listObj.(*v1.ConfigMapList)
+
 		for i := range cmList.Items {
 			vSet.Insert(differ.ClusterObject{
 				Object:       &cmList.Items[i],

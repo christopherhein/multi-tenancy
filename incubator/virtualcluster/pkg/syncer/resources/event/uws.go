@@ -21,8 +21,10 @@ import (
 	"fmt"
 
 	pkgerr "github.com/pkg/errors"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
@@ -40,6 +42,7 @@ func (c *controller) StartUWS(stopCh <-chan struct{}) error {
 }
 
 func (c *controller) BackPopulate(key string) error {
+	ctx := context.Background()
 	pNamespace, pName, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("invalid resource key %v: %v", key, err))
@@ -77,8 +80,8 @@ func (c *controller) BackPopulate(key string) error {
 		return nil
 	}
 
-	vInvolvedObject, err := c.MultiClusterController.GetByObjectType(clusterName, tenantNS, pEvent.InvolvedObject.Name, vInvolvedObjectType)
-	if err != nil {
+	objectKey := types.NamespacedName{Namespace: tenantNS, Name: pEvent.InvolvedObject.Name}
+	if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vInvolvedObjectType); err != nil {
 		if errors.IsNotFound(err) {
 			klog.Infof("back populate event: failed to find pod %s/%s in cluster %s", tenantNS, pEvent.InvolvedObject.Name, clusterName)
 			return nil
@@ -86,12 +89,11 @@ func (c *controller) BackPopulate(key string) error {
 		return err
 	}
 
-	vEvent := conversion.BuildVirtualEvent(clusterName, pEvent, vInvolvedObject.(metav1.Object))
-	_, err = c.MultiClusterController.Get(clusterName, tenantNS, vEvent.Name)
-	if err != nil {
+	vEvent := conversion.BuildVirtualEvent(clusterName, pEvent, vInvolvedObjectType.(metav1.Object))
+	eventObjectKey := types.NamespacedName{Namespace: tenantNS, Name: vEvent.Name}
+	if err = c.MultiClusterController.Get(ctx, clusterName, eventObjectKey, &v1.Event{}); err != nil {
 		if errors.IsNotFound(err) {
-			_, err = tenantClient.CoreV1().Events(tenantNS).Create(context.TODO(), vEvent, metav1.CreateOptions{})
-			return err
+			return tenantClient.Create(ctx, vEvent)
 		}
 		return err
 	}

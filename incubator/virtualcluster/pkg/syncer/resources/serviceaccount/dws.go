@@ -40,6 +40,7 @@ func (c *controller) StartDWS(stopCh <-chan struct{}) error {
 
 // The reconcile logic for tenant master service account informer
 func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, error) {
+	ctx := context.Background()
 	klog.V(4).Infof("reconcile service account %s/%s for cluster %s", request.Namespace, request.Name, request.ClusterName)
 	targetNamespace := conversion.ToSuperMasterNamespace(request.ClusterName, request.Namespace)
 	pSa, err := c.saLister.ServiceAccounts(targetNamespace).Get(request.Name)
@@ -51,8 +52,8 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 		pExists = false
 	}
 	vExists := true
-	vSaObj, err := c.MultiClusterController.Get(request.ClusterName, request.Namespace, request.Name)
-	if err != nil {
+	vSa := &v1.ServiceAccount{}
+	if err := c.MultiClusterController.Get(ctx, request.ClusterName, request.NamespacedName, vSa); err != nil {
 		if !errors.IsNotFound(err) {
 			return reconciler.Result{Requeue: true}, err
 		}
@@ -60,21 +61,20 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 	}
 
 	if vExists && !pExists {
-		vSa := vSaObj.(*v1.ServiceAccount)
-		err := c.reconcileServiceAccountCreate(request.ClusterName, targetNamespace, request.UID, vSa)
+
+		err := c.reconcileServiceAccountCreate(ctx, request.ClusterName, targetNamespace, request.UID, vSa)
 		if err != nil {
 			klog.Errorf("failed reconcile serviceaccount %s/%s CREATE of cluster %s %v", request.Namespace, request.Name, request.ClusterName, err)
 			return reconciler.Result{Requeue: true}, err
 		}
 	} else if !vExists && pExists {
-		err := c.reconcileServiceAccountRemove(request.ClusterName, targetNamespace, request.UID, request.Name, pSa)
+		err := c.reconcileServiceAccountRemove(ctx, request.ClusterName, targetNamespace, request.UID, request.Name, pSa)
 		if err != nil {
 			klog.Errorf("failed reconcile serviceaccount %s/%s DELETE of cluster %s %v", request.Namespace, request.Name, request.ClusterName, err)
 			return reconciler.Result{Requeue: true}, err
 		}
 	} else if vExists && pExists {
-		vSa := vSaObj.(*v1.ServiceAccount)
-		err := c.reconcileServiceAccountUpdate(request.ClusterName, targetNamespace, request.UID, pSa, vSa)
+		err := c.reconcileServiceAccountUpdate(ctx, request.ClusterName, targetNamespace, request.UID, pSa, vSa)
 		if err != nil {
 			klog.Errorf("failed reconcile serviceaccount %s/%s UPDATE of cluster %s %v", request.Namespace, request.Name, request.ClusterName, err)
 			return reconciler.Result{Requeue: true}, err
@@ -85,7 +85,7 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 	return reconciler.Result{}, nil
 }
 
-func (c *controller) reconcileServiceAccountCreate(clusterName, targetNamespace, requestUID string, vSa *v1.ServiceAccount) error {
+func (c *controller) reconcileServiceAccountCreate(ctx context.Context, clusterName, targetNamespace, requestUID string, vSa *v1.ServiceAccount) error {
 	vcName, vcNS, _, err := c.MultiClusterController.GetOwnerInfo(clusterName)
 	if err != nil {
 		return err
@@ -98,7 +98,7 @@ func (c *controller) reconcileServiceAccountCreate(clusterName, targetNamespace,
 	// set to empty and token controller will regenerate one.
 	pServiceAccount.Secrets = nil
 
-	pServiceAccount, err = c.saClient.ServiceAccounts(targetNamespace).Create(context.TODO(), pServiceAccount, metav1.CreateOptions{})
+	pServiceAccount, err = c.saClient.ServiceAccounts(targetNamespace).Create(ctx, pServiceAccount, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
 		if pServiceAccount.Annotations[constants.LabelUID] == requestUID {
 			klog.Infof("service account %s/%s of cluster %s already exist in super master", targetNamespace, pServiceAccount.Name, clusterName)
@@ -110,7 +110,7 @@ func (c *controller) reconcileServiceAccountCreate(clusterName, targetNamespace,
 	return err
 }
 
-func (c *controller) reconcileServiceAccountUpdate(clusterName, targetNamespace, requestUID string, pSa, vSa *v1.ServiceAccount) error {
+func (c *controller) reconcileServiceAccountUpdate(ctx context.Context, clusterName, targetNamespace, requestUID string, pSa, vSa *v1.ServiceAccount) error {
 	// Just mark the default service account of super master namespace, created by super master service account controller, as a tenant related resource.
 	if vSa.Name == "default" {
 		if len(pSa.Annotations) == 0 {
@@ -121,7 +121,7 @@ func (c *controller) reconcileServiceAccountUpdate(clusterName, targetNamespace,
 			pSa.Annotations[constants.LabelCluster] = clusterName
 			pSa.Annotations[constants.LabelUID] = string(vSa.UID)
 			pSa.Annotations[constants.LabelNamespace] = vSa.Namespace
-			_, err = c.saClient.ServiceAccounts(targetNamespace).Update(context.TODO(), pSa, metav1.UpdateOptions{})
+			_, err = c.saClient.ServiceAccounts(targetNamespace).Update(ctx, pSa, metav1.UpdateOptions{})
 		}
 		return err
 	}
@@ -134,14 +134,14 @@ func (c *controller) reconcileServiceAccountUpdate(clusterName, targetNamespace,
 	return nil
 }
 
-func (c *controller) reconcileServiceAccountRemove(clusterName, targetNamespace, requestUID, name string, pSa *v1.ServiceAccount) error {
+func (c *controller) reconcileServiceAccountRemove(ctx context.Context, clusterName, targetNamespace, requestUID, name string, pSa *v1.ServiceAccount) error {
 	if pSa.Annotations[constants.LabelUID] != requestUID {
 		return fmt.Errorf("To be deleted pServiceAccount %s/%s delegated UID is different from deleted object.", targetNamespace, pSa.Name)
 	}
 	opts := &metav1.DeleteOptions{
 		PropagationPolicy: &constants.DefaultDeletionPolicy,
 	}
-	err := c.saClient.ServiceAccounts(targetNamespace).Delete(context.TODO(), name, *opts)
+	err := c.saClient.ServiceAccounts(targetNamespace).Delete(ctx, name, *opts)
 	if errors.IsNotFound(err) {
 		klog.Warningf("service account %s/%s of cluster %s not found in super master", targetNamespace, name, clusterName)
 		return nil

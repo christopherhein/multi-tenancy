@@ -21,12 +21,12 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	tenancyv1alpha1 "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
@@ -34,7 +34,7 @@ import (
 	vcmanager "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/controller/vcmanager"
 )
 
-var log = logf.Log.WithName("clusterversion-controller")
+var log = ctrl.Log.WithName("clusterversion-controller")
 
 // Add creates a new ClusterVersion Controller and adds it to the Manager with
 // default RBAC. The Manager will set fields on the Controller and Start it
@@ -76,12 +76,12 @@ type ReconcileClusterVersion struct {
 // and what is in the ClusterVersion.Spec
 // +kubebuilder:rbac:groups=tenancy.x-k8s.io,resources=clusterversions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=tenancy.x-k8s.io,resources=clusterversions/status,verbs=get;update;patch
-func (r *ReconcileClusterVersion) Reconcile(request reconcile.Request) (reconcile.Result, error) {
+func (r *ReconcileClusterVersion) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 
 	// Fetch the ClusterVersion instance
 	log.Info("reconciling ClusterVersion...")
 	cv := &tenancyv1alpha1.ClusterVersion{}
-	err := r.Get(context.TODO(), request.NamespacedName, cv)
+	err := r.Get(ctx, request.NamespacedName, cv)
 	if err != nil {
 		// Error reading the object - requeue the request.
 		if apierrors.IsNotFound(err) {

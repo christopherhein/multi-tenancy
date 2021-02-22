@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
 
@@ -51,6 +52,7 @@ func (c *controller) StartPatrol(stopCh <-chan struct{}) error {
 // PatrollerDo check if services keep consistency between super
 // master and tenant masters.
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.Infof("tenant masters has no clusters, give up period checker")
@@ -66,7 +68,7 @@ func (c *controller) PatrollerDo() {
 		wg.Add(1)
 		go func(clusterName string) {
 			defer wg.Done()
-			c.checkServicesOfTenantCluster(clusterName)
+			c.checkServicesOfTenantCluster(ctx, clusterName)
 		}(clusterName)
 	}
 	wg.Wait()
@@ -83,12 +85,13 @@ func (c *controller) PatrollerDo() {
 			continue
 		}
 		shouldDelete := false
-		vServiceObj, err := c.MultiClusterController.Get(clusterName, vNamespace, pService.Name)
+		vService := &v1.Service{}
+		objectKey := types.NamespacedName{Namespace: vNamespace, Name: pService.Name}
+		err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vService)
 		if errors.IsNotFound(err) {
 			shouldDelete = true
 		}
 		if err == nil {
-			vService := vServiceObj.(*v1.Service)
 			if pService.Annotations[constants.LabelUID] != string(vService.UID) {
 				shouldDelete = true
 				klog.Warningf("Found pService %s/%s delegated UID is different from tenant object.", pService.Namespace, pService.Name)
@@ -96,7 +99,7 @@ func (c *controller) PatrollerDo() {
 		}
 		if shouldDelete {
 			deleteOptions := metav1.NewPreconditionDeleteOptions(string(pService.UID))
-			if err = c.serviceClient.Services(pService.Namespace).Delete(context.TODO(), pService.Name, *deleteOptions); err != nil {
+			if err = c.serviceClient.Services(pService.Namespace).Delete(ctx, pService.Name, *deleteOptions); err != nil {
 				klog.Errorf("error deleting pService %s/%s in super master: %v", pService.Namespace, pService.Name, err)
 			} else {
 				metrics.CheckerRemedyStats.WithLabelValues("DeletedOrphanSuperMasterServices").Inc()
@@ -109,14 +112,14 @@ func (c *controller) PatrollerDo() {
 	metrics.CheckerMissMatchStats.WithLabelValues("UWMetaMissMatchedServices").Set(float64(numUWMetaMissMatchedServices))
 }
 
-func (c *controller) checkServicesOfTenantCluster(clusterName string) {
-	listObj, err := c.MultiClusterController.List(clusterName)
-	if err != nil {
+func (c *controller) checkServicesOfTenantCluster(ctx context.Context, clusterName string) {
+	svcList := &v1.ServiceList{}
+	if err := c.MultiClusterController.List(ctx, clusterName, svcList); err != nil {
 		klog.Errorf("error listing services from cluster %s informer cache: %v", clusterName, err)
 		return
 	}
 	klog.V(4).Infof("check services consistency in cluster %s", clusterName)
-	svcList := listObj.(*v1.ServiceList)
+
 	for i, vService := range svcList.Items {
 		targetNamespace := conversion.ToSuperMasterNamespace(clusterName, vService.Namespace)
 		pService, err := c.serviceLister.Services(targetNamespace).Get(vService.Name)

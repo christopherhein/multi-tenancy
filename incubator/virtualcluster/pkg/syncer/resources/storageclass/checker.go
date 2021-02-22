@@ -24,10 +24,12 @@ import (
 
 	v1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
@@ -46,6 +48,7 @@ func (c *controller) StartPatrol(stopCh <-chan struct{}) error {
 
 // ParollerDo check if StorageClass keeps consistency between super master and tenant masters.
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.Infof("tenant masters has no clusters, give up storage class period checker")
@@ -59,7 +62,7 @@ func (c *controller) PatrollerDo() {
 		wg.Add(1)
 		go func(clusterName string) {
 			defer wg.Done()
-			c.checkStorageClassOfTenantCluster(clusterName)
+			c.checkStorageClassOfTenantCluster(ctx, clusterName)
 		}(clusterName)
 	}
 	wg.Wait()
@@ -75,8 +78,8 @@ func (c *controller) PatrollerDo() {
 			continue
 		}
 		for _, clusterName := range clusterNames {
-			_, err := c.MultiClusterController.Get(clusterName, "", pStorageClass.Name)
-			if err != nil {
+			objectKey := types.NamespacedName{Namespace: "", Name: pStorageClass.Name}
+			if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, &v1.StorageClass{}); err != nil {
 				if errors.IsNotFound(err) {
 					metrics.CheckerRemedyStats.WithLabelValues("RequeuedSuperMasterStorageClasses").Inc()
 					c.UpwardController.AddToQueue(clusterName + "/" + pStorageClass.Name)
@@ -89,14 +92,13 @@ func (c *controller) PatrollerDo() {
 	metrics.CheckerMissMatchStats.WithLabelValues("MissMatchedStorageClasses").Set(float64(numMissMatchedStorageClasses))
 }
 
-func (c *controller) checkStorageClassOfTenantCluster(clusterName string) {
-	listObj, err := c.MultiClusterController.List(clusterName)
-	if err != nil {
+func (c *controller) checkStorageClassOfTenantCluster(ctx context.Context, clusterName string) {
+	scList := &v1.StorageClassList{}
+	if err := c.MultiClusterController.List(ctx, clusterName, scList); err != nil {
 		klog.Errorf("error listing storageclass from cluster %s informer cache: %v", clusterName, err)
 		return
 	}
 	klog.V(4).Infof("check storageclass consistency in cluster %s", clusterName)
-	scList := listObj.(*v1.StorageClassList)
 	for i, vStorageClass := range scList.Items {
 		pStorageClass, err := c.storageclassLister.Get(vStorageClass.Name)
 		if errors.IsNotFound(err) {
@@ -106,10 +108,10 @@ func (c *controller) checkStorageClassOfTenantCluster(clusterName string) {
 				klog.Errorf("error getting cluster %s clientset: %v", clusterName, err)
 				continue
 			}
-			opts := &metav1.DeleteOptions{
+			opts := &client.DeleteOptions{
 				PropagationPolicy: &constants.DefaultDeletionPolicy,
 			}
-			if err := tenantClient.StorageV1().StorageClasses().Delete(context.TODO(), vStorageClass.Name, *opts); err != nil {
+			if err := tenantClient.Delete(ctx, &vStorageClass, opts); err != nil {
 				klog.Errorf("error deleting storageclass %v in cluster %s: %v", vStorageClass.Name, clusterName, err)
 			} else {
 				metrics.CheckerRemedyStats.WithLabelValues("DeletedOrphanTenantStorageClasses").Inc()

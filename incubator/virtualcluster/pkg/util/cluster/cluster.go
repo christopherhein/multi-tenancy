@@ -69,7 +69,7 @@ type Cluster struct {
 
 	// informer cache and delegating client for watched tenant master objects
 	cache            cache.Cache
-	delegatingClient *client.DelegatingClient
+	delegatingClient client.Client
 
 	// a clientset client for unwatched tenant master objects (rw directly to tenant apiserver)
 	client *clientset.Clientset
@@ -80,6 +80,8 @@ type Cluster struct {
 	synced bool
 
 	stopCh chan struct{}
+
+	ctx context.Context
 }
 
 // Options are the arguments for creating a new Cluster.
@@ -103,7 +105,7 @@ type CacheOptions struct {
 
 var _ mccontroller.ClusterInterface = &Cluster{}
 
-func NewCluster(key, namespace, name, uid string, getter mccontroller.Getter, configBytes []byte, o Options) (*Cluster, error) {
+func NewCluster(ctx context.Context, key, namespace, name, uid string, getter mccontroller.Getter, configBytes []byte, o Options) (*Cluster, error) {
 	clusterRestConfig, err := clientcmd.RESTConfigFromKubeConfig(configBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build rest config: %v", err)
@@ -129,6 +131,7 @@ func NewCluster(key, namespace, name, uid string, getter mccontroller.Getter, co
 		RestConfig: clusterRestConfig,
 		options:    o,
 		synced:     false,
+		ctx:        ctx,
 		stopCh:     make(chan struct{})}, nil
 }
 
@@ -142,7 +145,7 @@ func (c *Cluster) GetOwnerInfo() (string, string, string) {
 }
 
 // GetObject returns the cluster object.
-func (c *Cluster) GetObject() (runtime.Object, error) {
+func (c *Cluster) GetObject() (client.Object, error) {
 	obj, err := c.getter.GetObject(c.namespace, c.name)
 	if err != nil {
 		return nil, err
@@ -220,11 +223,6 @@ func (c *Cluster) GetDelegatingClient() (client.Client, error) {
 		return c.delegatingClient, nil
 	}
 
-	ca, err := c.getCache()
-	if err != nil {
-		return nil, err
-	}
-
 	m, err := c.getMapper()
 	if err != nil {
 		return nil, err
@@ -238,17 +236,8 @@ func (c *Cluster) GetDelegatingClient() (client.Client, error) {
 		return nil, err
 	}
 
-	dc := &client.DelegatingClient{
-		Reader: &client.DelegatingReader{
-			CacheReader:  ca,
-			ClientReader: cl,
-		},
-		Writer:       cl,
-		StatusClient: cl,
-	}
-
-	c.delegatingClient = dc
-	return dc, nil
+	c.delegatingClient = cl
+	return cl, nil
 }
 
 // GetRestConfig returns restful configuration of virtual cluster client
@@ -258,7 +247,7 @@ func (c *Cluster) GetRestConfig() *rest.Config {
 
 // AddEventHandler instructs the Cluster's cache to watch objectType's resource,
 // if it doesn't already, and to add handler as an event handler.
-func (c *Cluster) AddEventHandler(objectType runtime.Object, handler clientgocache.ResourceEventHandler) error {
+func (c *Cluster) AddEventHandler(objectType client.Object, handler clientgocache.ResourceEventHandler) error {
 	ca, err := c.getCache()
 	if err != nil {
 		return err
@@ -275,7 +264,7 @@ func (c *Cluster) AddEventHandler(objectType runtime.Object, handler clientgocac
 
 // GetInformer fetches or constructs an informer for the given object that corresponds to a single
 // API kind and resource.
-func (c *Cluster) GetInformer(objectType runtime.Object) (cache.Informer, error) {
+func (c *Cluster) GetInformer(objectType client.Object) (cache.Informer, error) {
 	ca, err := c.getCache()
 	if err != nil {
 		return nil, err
@@ -296,7 +285,7 @@ func (c *Cluster) Start() error {
 	if err != nil {
 		return err
 	}
-	return ca.Start(c.stopCh)
+	return ca.Start(c.ctx)
 }
 
 // WaitForCacheSync waits for the Cluster's cache to sync,
@@ -307,7 +296,7 @@ func (c *Cluster) WaitForCacheSync() bool {
 		klog.Errorf("Fail to get cache: %v", err)
 		return false
 	}
-	return ca.WaitForCacheSync(c.stopCh)
+	return ca.WaitForCacheSync(c.ctx)
 }
 
 func (c *Cluster) SetSynced() {

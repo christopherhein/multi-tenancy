@@ -27,8 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
-	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
 )
 
@@ -139,21 +139,22 @@ func nodeConditions() []v1.NodeCondition {
 	}
 }
 
-func UpdateNodeStatus(client v1core.NodeInterface, node, newNode *v1.Node) error {
-	_, _, err := patchNodeStatus(client, types.NodeName(node.Name), node, newNode)
+func UpdateNodeStatus(ctx context.Context, cli client.Client, node, newNode *v1.Node) error {
+	_, _, err := patchNodeStatus(ctx, cli, types.NodeName(node.Name), node, newNode)
 	return err
 }
 
 // patchNodeStatus patches node status.
 // Copied from github.com/kubernetes/kubernetes/pkg/util/node
-func patchNodeStatus(nodes v1core.NodeInterface, nodeName types.NodeName, oldNode *v1.Node, newNode *v1.Node) (*v1.Node, []byte, error) {
+func patchNodeStatus(ctx context.Context, cli client.Client, nodeName types.NodeName, oldNode *v1.Node, newNode *v1.Node) (*v1.Node, []byte, error) {
 	patchBytes, err := preparePatchBytesforNodeStatus(nodeName, oldNode, newNode)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	updatedNode, err := nodes.Patch(context.TODO(), string(nodeName), types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{}, "status")
-	if err != nil {
+	updatedNode := &v1.Node{}
+	rawPatch := client.RawPatch(types.StrategicMergePatchType, patchBytes)
+	if err := cli.Status().Patch(ctx, updatedNode, rawPatch); err != nil {
 		return nil, nil, fmt.Errorf("failed to patch status %q for node %q: %v", patchBytes, nodeName, err)
 	}
 	return updatedNode, patchBytes, nil

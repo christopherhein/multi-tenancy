@@ -22,9 +22,10 @@ import (
 
 	v1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/util/reconciler"
@@ -40,6 +41,7 @@ func (c *controller) StartUWS(stopCh <-chan struct{}) error {
 }
 
 func (c *controller) BackPopulate(key string) error {
+	ctx := context.Background()
 	// The key format is clustername/pcName.
 	clusterName, scName, _ := cache.SplitMetaNamespaceKey(key)
 
@@ -57,14 +59,14 @@ func (c *controller) BackPopulate(key string) error {
 		return fmt.Errorf("failed to create client from cluster %s config: %v", clusterName, err)
 	}
 
-	vPriorityClassObj, err := c.MultiClusterController.Get(clusterName, "", scName)
-	if err != nil {
+	vPriorityClass := &v1.PriorityClass{}
+	objectKey := types.NamespacedName{Namespace: "", Name: scName}
+	if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vPriorityClass); err != nil {
 		if errors.IsNotFound(err) {
 			if op == reconciler.AddEvent {
 				// Available in super, hence create a new in tenant master
 				vPriorityClass := conversion.BuildVirtualPriorityClass(clusterName, pPriorityClass)
-				_, err := tenantClient.SchedulingV1().PriorityClasses().Create(context.TODO(), vPriorityClass, metav1.CreateOptions{})
-				if err != nil {
+				if err := tenantClient.Create(ctx, vPriorityClass); err != nil {
 					return err
 				}
 			}
@@ -74,18 +76,17 @@ func (c *controller) BackPopulate(key string) error {
 	}
 
 	if op == reconciler.DeleteEvent {
-		opts := &metav1.DeleteOptions{
+		opts := &client.DeleteOptions{
 			PropagationPolicy: &constants.DefaultDeletionPolicy,
 		}
-		err := tenantClient.SchedulingV1().PriorityClasses().Delete(context.TODO(), scName, *opts)
+		err := tenantClient.Delete(ctx, vPriorityClass, opts)
 		if err != nil {
 			return err
 		}
 	} else {
-		updatedPriorityClass := conversion.Equality(c.Config, nil).CheckPriorityClassEquality(pPriorityClass, vPriorityClassObj.(*v1.PriorityClass))
+		updatedPriorityClass := conversion.Equality(c.Config, nil).CheckPriorityClassEquality(pPriorityClass, vPriorityClass)
 		if updatedPriorityClass != nil {
-			_, err := tenantClient.SchedulingV1().PriorityClasses().Update(context.TODO(), updatedPriorityClass, metav1.UpdateOptions{})
-			if err != nil {
+			if err := tenantClient.Update(ctx, updatedPriorityClass); err != nil {
 				return err
 			}
 		}

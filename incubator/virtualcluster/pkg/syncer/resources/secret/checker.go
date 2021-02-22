@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
 
@@ -48,6 +49,7 @@ func (c *controller) StartPatrol(stopCh <-chan struct{}) error {
 
 // PatrollerDo check if normal secrets and service account secrets keep consistency between super master and tenant masters.
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.Infof("tenant masters has no clusters, give up secret period checker")
@@ -62,7 +64,7 @@ func (c *controller) PatrollerDo() {
 		wg.Add(1)
 		go func(clusterName string) {
 			defer wg.Done()
-			c.checkSecretOfTenantCluster(clusterName)
+			c.checkSecretOfTenantCluster(ctx, clusterName)
 		}(clusterName)
 	}
 	wg.Wait()
@@ -93,12 +95,13 @@ func (c *controller) PatrollerDo() {
 			vSecretName = secretName
 		}
 		// check whether secret is exists in tenant.
-		vSecretObj, err := c.MultiClusterController.Get(clusterName, vNamespace, vSecretName)
+		vSecret := &v1.Secret{}
+		objectKey := types.NamespacedName{Namespace: vNamespace, Name: vSecretName}
+		err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vSecret)
 		if errors.IsNotFound(err) {
 			shouldDelete = true
 		}
 		if err == nil {
-			vSecret := vSecretObj.(*v1.Secret)
 			if pSecret.Annotations[constants.LabelUID] != string(vSecret.UID) {
 				shouldDelete = true
 				klog.Warningf("Found pSecret %s/%s delegated UID is different from tenant object.", pSecret.Namespace, pSecret.Name)
@@ -107,7 +110,7 @@ func (c *controller) PatrollerDo() {
 
 		if shouldDelete {
 			deleteOptions := metav1.NewPreconditionDeleteOptions(string(pSecret.UID))
-			if err := c.secretClient.Secrets(pSecret.Namespace).Delete(context.TODO(), pSecret.Name, *deleteOptions); err != nil {
+			if err := c.secretClient.Secrets(pSecret.Namespace).Delete(ctx, pSecret.Name, *deleteOptions); err != nil {
 				klog.Errorf("error deleting pSecret %s/%s in super master: %v", pSecret.Namespace, pSecret.Name, err)
 			} else {
 				metrics.CheckerRemedyStats.WithLabelValues("DeletedOrphanSuperMasterSecrets").Inc()
@@ -119,14 +122,15 @@ func (c *controller) PatrollerDo() {
 	metrics.CheckerMissMatchStats.WithLabelValues("MissMatchedSASecrets").Set(float64(numMissMatchedSASecrets))
 }
 
-func (c *controller) checkSecretOfTenantCluster(clusterName string) {
-	listObj, err := c.MultiClusterController.List(clusterName)
+func (c *controller) checkSecretOfTenantCluster(ctx context.Context, clusterName string) {
+	secretList := &v1.SecretList{}
+	err := c.MultiClusterController.List(ctx, clusterName, secretList)
 	if err != nil {
 		klog.Errorf("error listing secrets from cluster %s informer cache: %v", clusterName, err)
 		return
 	}
 	klog.V(4).Infof("check secrets consistency in cluster %s", clusterName)
-	secretList := listObj.(*v1.SecretList)
+
 	for i, vSecret := range secretList.Items {
 		targetNamespace := conversion.ToSuperMasterNamespace(clusterName, vSecret.Namespace)
 

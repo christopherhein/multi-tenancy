@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
@@ -47,6 +48,7 @@ func (c *controller) StartDWS(stopCh <-chan struct{}) error {
 }
 
 func (c *controller) Reconcile(request reconciler.Request) (res reconciler.Result, retErr error) {
+	ctx := context.Background()
 	klog.V(4).Infof("reconcile pod %s/%s for cluster %s", request.Namespace, request.Name, request.ClusterName)
 	targetNamespace := conversion.ToSuperMasterNamespace(request.ClusterName, request.Namespace)
 
@@ -55,11 +57,8 @@ func (c *controller) Reconcile(request reconciler.Request) (res reconciler.Resul
 		return reconciler.Result{Requeue: true}, err
 	}
 
-	var vPod *v1.Pod
-	vPodObj, err := c.MultiClusterController.Get(request.ClusterName, request.Namespace, request.Name)
-	if err == nil {
-		vPod = vPodObj.(*v1.Pod)
-	} else if !errors.IsNotFound(err) {
+	vPod := &v1.Pod{}
+	if err := c.MultiClusterController.Get(ctx, request.ClusterName, request.NamespacedName, vPod); !errors.IsNotFound(err) {
 		return reconciler.Result{Requeue: true}, err
 	}
 
@@ -71,14 +70,14 @@ func (c *controller) Reconcile(request reconciler.Request) (res reconciler.Resul
 
 	if vPod != nil && pPod == nil {
 		operation = "pod_add"
-		err := c.reconcilePodCreate(request.ClusterName, targetNamespace, request.UID, vPod)
+		err := c.reconcilePodCreate(ctx, request.ClusterName, targetNamespace, request.UID, vPod)
 		if err != nil {
 			klog.Errorf("failed reconcile Pod %s/%s CREATE of cluster %s %v", request.Namespace, request.Name, request.ClusterName, err)
 
 			if parentRef := getParentRefFromPod(vPod); parentRef != nil {
-				c.MultiClusterController.Eventf(request.ClusterName, parentRef, v1.EventTypeWarning, "FailedCreate", "Error creating: %v", err)
+				c.MultiClusterController.Eventf(ctx, request.ClusterName, parentRef, v1.EventTypeWarning, "FailedCreate", "Error creating: %v", err)
 			}
-			c.MultiClusterController.Eventf(request.ClusterName, &v1.ObjectReference{
+			c.MultiClusterController.Eventf(ctx, request.ClusterName, &v1.ObjectReference{
 				Kind:      "Pod",
 				Namespace: vPod.Namespace,
 				UID:       vPod.UID,
@@ -154,7 +153,7 @@ func getParentRefFromPod(vPod *v1.Pod) *v1.ObjectReference {
 	}
 }
 
-func (c *controller) reconcilePodCreate(clusterName, targetNamespace, requestUID string, vPod *v1.Pod) error {
+func (c *controller) reconcilePodCreate(ctx context.Context, clusterName, targetNamespace, requestUID string, vPod *v1.Pod) error {
 	// load deleting pod, don't create any pod on super master.
 	if vPod.DeletionTimestamp != nil {
 		return nil
@@ -162,7 +161,7 @@ func (c *controller) reconcilePodCreate(clusterName, targetNamespace, requestUID
 
 	if vPod.Spec.NodeName != "" {
 		// For now, we skip vPod that has NodeName set to prevent tenant from deploying DaemonSet or DaemonSet alike CRDs.
-		err := c.MultiClusterController.Eventf(clusterName, &v1.ObjectReference{
+		err := c.MultiClusterController.Eventf(ctx, clusterName, &v1.ObjectReference{
 			Kind:      "Pod",
 			Namespace: vPod.Namespace,
 			UID:       vPod.UID,
@@ -181,7 +180,7 @@ func (c *controller) reconcilePodCreate(clusterName, targetNamespace, requestUID
 
 	pPod := newObj.(*v1.Pod)
 
-	pSecretMap, err := c.findPodServiceAccountSecret(clusterName, pPod, vPod)
+	pSecretMap, err := c.findPodServiceAccountSecret(ctx, clusterName, pPod, vPod)
 	if err != nil {
 		return fmt.Errorf("failed to get service account secret from cluster %s cache: %v", clusterName, err)
 	}
@@ -207,7 +206,7 @@ func (c *controller) reconcilePodCreate(clusterName, targetNamespace, requestUID
 	if err != nil {
 		return fmt.Errorf("failed to mutate pod: %v", err)
 	}
-	pPod, err = c.client.Pods(targetNamespace).Create(context.TODO(), pPod, metav1.CreateOptions{})
+	pPod, err = c.client.Pods(targetNamespace).Create(ctx, pPod, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
 		if pPod.Annotations[constants.LabelUID] == requestUID {
 			klog.Infof("pod %s/%s of cluster %s already exist in super master", targetNamespace, pPod.Name, clusterName)
@@ -220,7 +219,7 @@ func (c *controller) reconcilePodCreate(clusterName, targetNamespace, requestUID
 	return err
 }
 
-func (c *controller) findPodServiceAccountSecret(clusterName string, pPod, vPod *v1.Pod) (map[string]string, error) {
+func (c *controller) findPodServiceAccountSecret(ctx context.Context, clusterName string, pPod, vPod *v1.Pod) (map[string]string, error) {
 	mountSecretSet := sets.NewString()
 	for _, volume := range vPod.Spec.Volumes {
 		if volume.Secret != nil {
@@ -232,11 +231,11 @@ func (c *controller) findPodServiceAccountSecret(clusterName string, pPod, vPod 
 	mutateNameMap := make(map[string]string)
 
 	for secretName := range mountSecretSet {
-		vSecretObj, err := c.MultiClusterController.GetByObjectType(clusterName, vPod.Namespace, secretName, &v1.Secret{})
-		if err != nil {
+		vSecret := &v1.Secret{}
+		objectKey := types.NamespacedName{Namespace: vPod.Namespace, Name: secretName}
+		if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vSecret); err != nil {
 			return nil, pkgerr.Wrapf(err, "failed to get vSecret %s/%s", vPod.Namespace, secretName)
 		}
-		vSecret := vSecretObj.(*v1.Secret)
 
 		// normal secret. pSecret name is the same as the vSecret.
 		if vSecret.Type != v1.SecretTypeServiceAccountToken {

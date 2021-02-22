@@ -23,7 +23,7 @@ import (
 
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
 	vcclient "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/clientset/versioned"
-	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/log"
 )
 
 func DeleteCV(client vcclient.Interface, cv *v1alpha1.ClusterVersion) error {
@@ -34,7 +34,7 @@ func DeleteCV(client vcclient.Interface, cv *v1alpha1.ClusterVersion) error {
 }
 
 func DeleteCVByName(client vcclient.Interface, name string) error {
-	framework.Logf("Deleting cv %q", name)
+	log.Logf("Deleting cv %q", name)
 	err := client.TenancyV1alpha1().ClusterVersions().Delete(name, nil)
 	if err != nil {
 		if apierrs.IsNotFound(err) {

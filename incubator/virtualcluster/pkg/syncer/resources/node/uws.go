@@ -17,11 +17,13 @@ limitations under the License.
 package node
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
 
@@ -75,6 +77,7 @@ func (c *controller) BackPopulate(nodeName string) error {
 
 func (c *controller) updateClusterNodeStatus(clusterName string, node *v1.Node, wg *sync.WaitGroup) {
 	defer wg.Done()
+	ctx := context.Background()
 
 	tenantClient, err := c.MultiClusterController.GetClusterClient(clusterName)
 	if err != nil {
@@ -86,8 +89,9 @@ func (c *controller) updateClusterNodeStatus(clusterName string, node *v1.Node, 
 		return
 	}
 
-	vNodeObj, err := c.MultiClusterController.Get(clusterName, "", node.Name)
-	if err != nil {
+	vNode := &v1.Node{}
+	objectKey := types.NamespacedName{Namespace: "", Name: node.Name}
+	if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vNode); err != nil {
 		if errors.IsNotFound(err) {
 			klog.Errorf("could not find node %s/%s: %v", clusterName, node.Name, err)
 			c.Lock()
@@ -99,7 +103,6 @@ func (c *controller) updateClusterNodeStatus(clusterName string, node *v1.Node, 
 		return
 	}
 
-	vNode := vNodeObj.(*v1.Node)
 	newVNode := vNode.DeepCopy()
 	newVNode.Status.Conditions = node.Status.Conditions
 	vNodeAddress, err := c.vnodeProvider.GetNodeAddress(node)
@@ -109,7 +112,7 @@ func (c *controller) updateClusterNodeStatus(clusterName string, node *v1.Node, 
 	}
 	newVNode.Status.Addresses = vNodeAddress
 
-	if err := vnode.UpdateNodeStatus(tenantClient.CoreV1().Nodes(), vNode, newVNode); err != nil {
+	if err := vnode.UpdateNodeStatus(ctx, tenantClient, vNode, newVNode); err != nil {
 		klog.Errorf("failed to update node %s/%s's heartbeats: %v", clusterName, node.Name, err)
 	}
 	return

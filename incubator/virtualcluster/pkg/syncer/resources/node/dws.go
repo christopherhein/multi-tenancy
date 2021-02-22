@@ -17,6 +17,8 @@ limitations under the License.
 package node
 
 import (
+	"context"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/klog"
@@ -32,10 +34,12 @@ func (c *controller) StartDWS(stopCh <-chan struct{}) error {
 // The reconcile logic for tenant master node informer, the main purpose is to maintain
 // the nodeNameToCluster mapping
 func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, error) {
+	ctx := context.Background()
 	klog.V(4).Infof("reconcile node %s for cluster %s", request.Name, request.ClusterName)
+
 	vExists := true
-	vNodeObj, err := c.MultiClusterController.Get(request.ClusterName, request.Namespace, request.Name)
-	if err != nil {
+	vNode := &v1.Node{}
+	if err := c.MultiClusterController.Get(ctx, request.ClusterName, request.NamespacedName, vNode); err != nil {
 		if !errors.IsNotFound(err) {
 			return reconciler.Result{Requeue: true}, err
 		}
@@ -43,7 +47,6 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 	}
 
 	if vExists {
-		vNode := vNodeObj.(*v1.Node)
 		if vNode.Labels[constants.LabelVirtualNode] != "true" {
 			// We only handle virtual nodes created by syncer
 			return reconciler.Result{}, nil

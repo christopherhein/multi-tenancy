@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
@@ -46,6 +47,7 @@ func (c *controller) StartPatrol(stopCh <-chan struct{}) error {
 // PatrollerDo checks to see if serviceaccounts in super master informer cache and tenant master
 // keep consistency.
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.Infof("tenant masters has no clusters, give up period checker")
@@ -58,7 +60,7 @@ func (c *controller) PatrollerDo() {
 		wg.Add(1)
 		go func(clusterName string) {
 			defer wg.Done()
-			c.checkServiceAccountsOfTenantCluster(clusterName)
+			c.checkServiceAccountsOfTenantCluster(ctx, clusterName)
 		}(clusterName)
 	}
 	wg.Wait()
@@ -75,12 +77,14 @@ func (c *controller) PatrollerDo() {
 			continue
 		}
 		shouldDelete := false
-		vSaObj, err := c.MultiClusterController.Get(clusterName, vNamespace, pSa.Name)
+		vSa := &v1.ServiceAccount{}
+		objectKey := types.NamespacedName{Namespace: vNamespace, Name: pSa.Name}
+		err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vSa)
 		if errors.IsNotFound(err) {
 			shouldDelete = true
 		}
 		if err == nil {
-			vSa := vSaObj.(*v1.ServiceAccount)
+
 			if pSa.Annotations[constants.LabelUID] != string(vSa.UID) {
 				shouldDelete = true
 				klog.Warningf("Found pServiceAccount %s/%s delegated UID is different from tenant object.", pSa.Namespace, pSa.Name)
@@ -90,7 +94,7 @@ func (c *controller) PatrollerDo() {
 			// vSa not found and pSa still exist, we need to delete pSa manually
 			deleteOptions := &metav1.DeleteOptions{}
 			deleteOptions.Preconditions = metav1.NewUIDPreconditions(string(pSa.UID))
-			if err = c.saClient.ServiceAccounts(pSa.Namespace).Delete(context.TODO(), pSa.Name, *deleteOptions); err != nil {
+			if err = c.saClient.ServiceAccounts(pSa.Namespace).Delete(ctx, pSa.Name, *deleteOptions); err != nil {
 				klog.Errorf("error deleting pServiceAccount %v/%v in super master: %v", pSa.Namespace, pSa.Name, err)
 			} else {
 				metrics.CheckerRemedyStats.WithLabelValues("DeletedOrphanSuperMasterServiceAccounts").Inc()
@@ -100,14 +104,14 @@ func (c *controller) PatrollerDo() {
 }
 
 // ccheckServiceAccountsOfTenantCluste checks to see if serviceaccounts in specific cluster keeps consistency.
-func (c *controller) checkServiceAccountsOfTenantCluster(clusterName string) {
-	listObj, err := c.MultiClusterController.List(clusterName)
-	if err != nil {
+func (c *controller) checkServiceAccountsOfTenantCluster(ctx context.Context, clusterName string) {
+	saList := &v1.ServiceAccountList{}
+	if err := c.MultiClusterController.List(ctx, clusterName, saList); err != nil {
 		klog.Errorf("error listing serviceaccounts from cluster %s informer cache: %v", clusterName, err)
 		return
 	}
 	klog.V(4).Infof("check serviceaccounts consistency in cluster %s", clusterName)
-	saList := listObj.(*v1.ServiceAccountList)
+
 	for i, vSa := range saList.Items {
 		targetNamespace := conversion.ToSuperMasterNamespace(clusterName, vSa.Namespace)
 		pSa, err := c.saLister.ServiceAccounts(targetNamespace).Get(vSa.Name)

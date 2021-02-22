@@ -20,7 +20,6 @@ import (
 	"fmt"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
@@ -28,6 +27,7 @@ import (
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	clt "sigs.k8s.io/controller-runtime/pkg/client"
 
 	vcclient "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/clientset/versioned"
 	vcinformers "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/client/informers/externalversions/tenancy/v1alpha1"
@@ -58,7 +58,7 @@ type controller struct {
 	nsLister    listersv1.NamespaceLister
 	nsSynced    cache.InformerSynced
 
-	acceptedEventObj map[string]runtime.Object
+	acceptedEventObj map[string]clt.Object
 }
 
 func NewEventController(config *config.SyncerConfiguration,
@@ -74,7 +74,7 @@ func NewEventController(config *config.SyncerConfiguration,
 		},
 		client:   client.CoreV1(),
 		informer: informer.Core().V1(),
-		acceptedEventObj: map[string]runtime.Object{
+		acceptedEventObj: map[string]clt.Object{
 			"Pod":     &v1.Pod{},
 			"Service": &v1.Service{},
 		},

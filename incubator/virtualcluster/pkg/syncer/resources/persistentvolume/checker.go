@@ -26,8 +26,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
@@ -47,6 +49,7 @@ func (c *controller) StartPatrol(stopCh <-chan struct{}) error {
 
 // PatrollerDo check if persistent volumes keep consistency between super master and tenant masters.
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.Infof("tenant masters has no clusters, give up period checker")
@@ -61,7 +64,7 @@ func (c *controller) PatrollerDo() {
 		wg.Add(1)
 		go func(clusterName string) {
 			defer wg.Done()
-			c.checkPersistentVolumeOfTenantCluster(clusterName)
+			c.checkPersistentVolumeOfTenantCluster(ctx, clusterName)
 		}(clusterName)
 	}
 	wg.Wait()
@@ -88,8 +91,9 @@ func (c *controller) PatrollerDo() {
 			// Bound PVC does not belong to any tenant.
 			continue
 		}
-		vPVObj, err := c.MultiClusterController.Get(clusterName, "", pPV.Name)
-		if err != nil {
+		vPV := &v1.PersistentVolume{}
+		objectKey := types.NamespacedName{Namespace: "", Name: pPV.Name}
+		if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vPV); err != nil {
 			if errors.IsNotFound(err) {
 				metrics.CheckerRemedyStats.WithLabelValues("RequeuedSuperMasterPVs").Inc()
 				c.UpwardController.AddToQueue(pPV.Name)
@@ -97,7 +101,6 @@ func (c *controller) PatrollerDo() {
 			klog.Errorf("fail to get pv %s from cluster %s: %v", pPV.Name, clusterName, err)
 		} else {
 			// Double check if the vPV is bound to the correct PVC.
-			vPV := vPVObj.(*v1.PersistentVolume)
 			if vPV.Spec.ClaimRef == nil || vPV.Spec.ClaimRef.Name != pPVC.Name || vPV.Spec.ClaimRef.Namespace != vNamespace {
 				//klog.Errorf("vPV %v from cluster %s is not bound to the correct pvc", vPV, clusterName)
 				numClaimMissMatchedPVs++
@@ -109,14 +112,13 @@ func (c *controller) PatrollerDo() {
 	metrics.CheckerMissMatchStats.WithLabelValues("SpecMissMatchedPVs").Set(float64(numSpecMissMatchedPVs))
 }
 
-func (c *controller) checkPersistentVolumeOfTenantCluster(clusterName string) {
-	listObj, err := c.MultiClusterController.List(clusterName)
-	if err != nil {
+func (c *controller) checkPersistentVolumeOfTenantCluster(ctx context.Context, clusterName string) {
+	pvList := &v1.PersistentVolumeList{}
+	if err := c.MultiClusterController.List(ctx, clusterName, pvList); err != nil {
 		klog.Errorf("error listing pv from cluster %s informer cache: %v", clusterName, err)
 		return
 	}
 	klog.V(4).Infof("check pv consistency in cluster %s", clusterName)
-	pvList := listObj.(*v1.PersistentVolumeList)
 	for _, vPV := range pvList.Items {
 		pPV, err := c.pvLister.Get(vPV.Name)
 		shouldDelete := false
@@ -142,11 +144,12 @@ func (c *controller) checkPersistentVolumeOfTenantCluster(clusterName string) {
 				klog.Errorf("error getting cluster %s clientset: %v", clusterName, err)
 				continue
 			}
-			opts := &metav1.DeleteOptions{
+			opts := &client.DeleteOptions{
 				PropagationPolicy: &constants.DefaultDeletionPolicy,
 				Preconditions:     metav1.NewUIDPreconditions(string(vPV.UID)),
 			}
-			if err := tenantClient.CoreV1().PersistentVolumes().Delete(context.TODO(), vPV.Name, *opts); err != nil {
+
+			if err := tenantClient.Delete(ctx, &vPV, opts); err != nil {
 				klog.Errorf("error deleting pv %v in cluster %s: %v", vPV.Name, clusterName, err)
 			} else {
 				metrics.CheckerRemedyStats.WithLabelValues("DeletedOrphanTenantPVs").Inc()

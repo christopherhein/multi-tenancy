@@ -21,8 +21,9 @@ import (
 	"fmt"
 	"strings"
 
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog"
 	"k8s.io/utils/pointer"
 
@@ -364,12 +365,12 @@ func PodAddExtensionMeta(vPod *v1.Pod) PodMutator {
 		if err != nil {
 			return fmt.Errorf("vc %s failed to get client: %v", p.clusterName, err)
 		}
-		replicaSetObj, err := client.AppsV1().ReplicaSets(ns).Get(context.TODO(), replicaSetName, metav1.GetOptions{})
-		if err != nil {
+		replicaSet := &appsv1.ReplicaSet{}
+		if err := client.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: replicaSetName}, replicaSet); err != nil {
 			return fmt.Errorf("vc %s failed to get replicaset object %s in %s: %v", p.clusterName, replicaSetName, ns, err)
 		}
 
-		if len(replicaSetObj.ObjectMeta.OwnerReferences) == 0 {
+		if len(replicaSet.ObjectMeta.OwnerReferences) == 0 {
 			// It can be a standalone rs
 			return nil
 		}
@@ -377,8 +378,8 @@ func PodAddExtensionMeta(vPod *v1.Pod) PodMutator {
 		if len(labels) == 0 {
 			labels = make(map[string]string)
 		}
-		labels[constants.LabelExtendDeploymentName] = replicaSetObj.ObjectMeta.OwnerReferences[0].Name
-		labels[constants.LabelExtendDeploymentUID] = string(replicaSetObj.ObjectMeta.OwnerReferences[0].UID)
+		labels[constants.LabelExtendDeploymentName] = replicaSet.ObjectMeta.OwnerReferences[0].Name
+		labels[constants.LabelExtendDeploymentUID] = string(replicaSet.ObjectMeta.OwnerReferences[0].UID)
 		p.pPod.SetLabels(labels)
 
 		return nil

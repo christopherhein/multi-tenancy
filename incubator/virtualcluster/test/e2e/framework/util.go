@@ -33,7 +33,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	e2elog "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/log"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/log"
 	e2epod "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/pod"
 )
 
@@ -56,7 +56,7 @@ func ExpectNoError(err error, explain ...interface{}) {
 // (for example, for call chain f -> g -> ExpectNoErrorWithOffset(1, ...) error would be logged for "f").
 func ExpectNoErrorWithOffset(offset int, err error, explain ...interface{}) {
 	if err != nil {
-		e2elog.Logf("Unexpected error occurred: %v", err)
+		log.Logf("Unexpected error occurred: %v", err)
 	}
 	gomega.ExpectWithOffset(1+offset, err).NotTo(gomega.HaveOccurred(), explain...)
 }
@@ -69,7 +69,7 @@ func ExpectNoErrorWithRetries(fn func() error, maxRetries int, explain ...interf
 		if err == nil {
 			return
 		}
-		e2elog.Logf("(Attempt %d of %d) Unexpected error occurred: %v", i+1, maxRetries, err)
+		log.Logf("(Attempt %d of %d) Unexpected error occurred: %v", i+1, maxRetries, err)
 	}
 	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), explain...)
 }
@@ -103,7 +103,7 @@ func DumpEventsInNamespace(eventsLister EventsLister, namespace string) {
 		sort.Sort(byFirstTimestamp(sortedEvents))
 	}
 	for _, e := range sortedEvents {
-		e2elog.Logf("At %v - event for %v: %v %v: %v", e.FirstTimestamp, e.InvolvedObject.Name, e.Source, e.Reason, e.Message)
+		log.Logf("At %v - event for %v: %v %v: %v", e.FirstTimestamp, e.InvolvedObject.Name, e.Source, e.Reason, e.Message)
 	}
 	// Note that we don't wait for any Cleanup to propagate, which means
 	// that if you delete a bunch of pods right before ending your test,
@@ -134,7 +134,7 @@ func LoadConfig() (*restclient.Config, error) {
 
 // RestclientConfig returns a config holds the information needed to build connection to kubernetes clusters.
 func RestclientConfig(kubeContext string) (*clientcmdapi.Config, error) {
-	e2elog.Logf(">>> kubeConfig: %s", TestContext.KubeConfig)
+	log.Logf(">>> kubeConfig: %s", TestContext.KubeConfig)
 	if TestContext.KubeConfig == "" {
 		return nil, fmt.Errorf("KubeConfig must be specified to load client config")
 	}
@@ -143,7 +143,7 @@ func RestclientConfig(kubeContext string) (*clientcmdapi.Config, error) {
 		return nil, fmt.Errorf("error loading KubeConfig: %v", err.Error())
 	}
 	if kubeContext != "" {
-		e2elog.Logf(">>> kubeContext: %s", kubeContext)
+		log.Logf(">>> kubeContext: %s", kubeContext)
 		c.CurrentContext = kubeContext
 	}
 	return c, nil
@@ -166,7 +166,7 @@ func findAvailableNamespaceName(baseName string, c clientset.Interface) (string,
 		if apierrs.IsNotFound(err) {
 			return true, nil
 		}
-		e2elog.Logf("Unexpected error while getting namespace: %v", err)
+		log.Logf("Unexpected error while getting namespace: %v", err)
 		return false, nil
 	})
 	return name, err
@@ -202,7 +202,7 @@ func CreateTestingNS(baseName string, c clientset.Interface, labels map[string]s
 		var err error
 		got, err = c.CoreV1().Namespaces().Create(context.TODO(), namespaceObj, metav1.CreateOptions{})
 		if err != nil {
-			e2elog.Logf("Unexpected error while creating namespace: %v", err)
+			log.Logf("Unexpected error while creating namespace: %v", err)
 			return false, nil
 		}
 		return true, nil

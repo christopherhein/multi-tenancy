@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
 
@@ -51,6 +52,7 @@ func (c *controller) StartPatrol(stopCh <-chan struct{}) error {
 // PatrollerDo check if ingresss keep consistency between super
 // master and tenant masters.
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.Infof("tenant masters has no clusters, give up period checker")
@@ -66,7 +68,7 @@ func (c *controller) PatrollerDo() {
 		wg.Add(1)
 		go func(clusterName string) {
 			defer wg.Done()
-			c.checkIngressesOfTenantCluster(clusterName)
+			c.checkIngressesOfTenantCluster(ctx, clusterName)
 		}(clusterName)
 	}
 	wg.Wait()
@@ -83,12 +85,13 @@ func (c *controller) PatrollerDo() {
 			continue
 		}
 		shouldDelete := false
-		vIngressObj, err := c.MultiClusterController.Get(clusterName, vNamespace, pIngress.Name)
+		vIngress := &v1beta1.Ingress{}
+		objectKey := types.NamespacedName{Namespace: vNamespace, Name: pIngress.Name}
+		err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vIngress)
 		if errors.IsNotFound(err) {
 			shouldDelete = true
 		}
 		if err == nil {
-			vIngress := vIngressObj.(*v1beta1.Ingress)
 			if pIngress.Annotations[constants.LabelUID] != string(vIngress.UID) {
 				shouldDelete = true
 				klog.Warningf("Found pIngress %s/%s delegated UID is different from tenant object.", pIngress.Namespace, pIngress.Name)
@@ -109,14 +112,13 @@ func (c *controller) PatrollerDo() {
 	metrics.CheckerMissMatchStats.WithLabelValues("UWMetaMissMatchedIngresses").Set(float64(numUWMetaMissMatchedIngresses))
 }
 
-func (c *controller) checkIngressesOfTenantCluster(clusterName string) {
-	listObj, err := c.MultiClusterController.List(clusterName)
-	if err != nil {
+func (c *controller) checkIngressesOfTenantCluster(ctx context.Context, clusterName string) {
+	ingList := &v1beta1.IngressList{}
+	if err := c.MultiClusterController.List(ctx, clusterName, ingList); err != nil {
 		klog.Errorf("error listing ingresss from cluster %s informer cache: %v", clusterName, err)
 		return
 	}
 	klog.V(4).Infof("check ingresss consistency in cluster %s", clusterName)
-	ingList := listObj.(*v1beta1.IngressList)
 	for i, vIngress := range ingList.Items {
 		targetNamespace := conversion.ToSuperMasterNamespace(clusterName, vIngress.Namespace)
 		pIngress, err := c.ingressLister.Ingresses(targetNamespace).Get(vIngress.Name)

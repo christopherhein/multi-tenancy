@@ -24,6 +24,7 @@ import (
 
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/ginkgowrapper"
+	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/test/e2e/framework/log"
 )
 
 // Similar to SynchronizedBeforeSuite, we want to run some operations only once (such as collecting cluster logs).
@@ -31,11 +32,11 @@ import (
 // and then the function that only runs on the first Ginkgo node.
 var _ = ginkgo.SynchronizedAfterSuite(func() {
 	// Run on all Ginkgo nodes
-	framework.Logf("Running AfterSuite actions on all nodes")
+	log.Logf("Running AfterSuite actions on all nodes")
 	framework.RunCleanupActions()
 }, func() {
 	// Run only Ginkgo on node 1
-	framework.Logf("Running AfterSuite actions on node 1")
+	log.Logf("Running AfterSuite actions on node 1")
 })
 
 // RunE2ETests checks configuration parameters (specified through flags) and then runs

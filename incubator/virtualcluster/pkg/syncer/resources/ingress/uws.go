@@ -24,7 +24,7 @@ import (
 	v1beta1 "k8s.io/api/extensions/v1beta1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
@@ -44,6 +44,7 @@ func (c *controller) StartUWS(stopCh <-chan struct{}) error {
 }
 
 func (c *controller) BackPopulate(key string) error {
+	ctx := context.Background()
 	pNamespace, pName, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("invalid resource key %v: %v", key, err))
@@ -64,14 +65,15 @@ func (c *controller) BackPopulate(key string) error {
 		return nil
 	}
 
-	vIngressObj, err := c.MultiClusterController.Get(clusterName, vNamespace, pName)
-	if err != nil {
+	vIngress := &v1beta1.Ingress{}
+	objectKey := types.NamespacedName{Namespace: vNamespace, Name: pName}
+	if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vIngress); err != nil {
 		if errors.IsNotFound(err) {
 			return nil
 		}
 		return pkgerr.Wrapf(err, "could not find pIngress %s/%s's vIngress in controller cache", vNamespace, pName)
 	}
-	vIngress := vIngressObj.(*v1beta1.Ingress)
+
 	if pIngress.Annotations[constants.LabelUID] != string(vIngress.UID) {
 		return fmt.Errorf("BackPopulated pIngress %s/%s delegated UID is different from updated object.", pIngress.Namespace, pIngress.Name)
 	}
@@ -91,7 +93,7 @@ func (c *controller) BackPopulate(key string) error {
 	if updatedMeta != nil {
 		newIngress = vIngress.DeepCopy()
 		newIngress.ObjectMeta = *updatedMeta
-		if _, err = tenantClient.ExtensionsV1beta1().Ingresses(vIngress.Namespace).Update(context.TODO(), newIngress, metav1.UpdateOptions{}); err != nil {
+		if err = tenantClient.Update(ctx, newIngress); err != nil {
 			return fmt.Errorf("failed to back populate ingress %s/%s meta update for cluster %s: %v", vIngress.Namespace, vIngress.Name, clusterName, err)
 		}
 	}
@@ -101,12 +103,13 @@ func (c *controller) BackPopulate(key string) error {
 			newIngress = vIngress.DeepCopy()
 		} else {
 			// vIngress has been updated, let us fetch the lastest version.
-			if newIngress, err = tenantClient.ExtensionsV1beta1().Ingresses(vIngress.Namespace).Get(context.TODO(), vIngress.Name, metav1.GetOptions{}); err != nil {
+			ingress := &v1beta1.Ingress{}
+			if err = tenantClient.Get(ctx, types.NamespacedName{Namespace: vIngress.Namespace, Name: vIngress.Name}, ingress); err != nil {
 				return fmt.Errorf("failed to retrieve vIngress %s/%s from cluster %s: %v", vIngress.Namespace, vIngress.Name, clusterName, err)
 			}
 		}
 		newIngress.Status = pIngress.Status
-		if _, err = tenantClient.ExtensionsV1beta1().Ingresses(vIngress.Namespace).UpdateStatus(context.TODO(), newIngress, metav1.UpdateOptions{}); err != nil {
+		if err = tenantClient.Status().Update(ctx, newIngress); err != nil {
 			return fmt.Errorf("failed to back populate ingress %s/%s status update for cluster %s: %v", vIngress.Namespace, vIngress.Name, clusterName, err)
 		}
 	}

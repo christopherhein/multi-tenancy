@@ -23,7 +23,7 @@ import (
 	pkgerr "github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
 
@@ -41,6 +41,7 @@ func (c *controller) StartUWS(stopCh <-chan struct{}) error {
 }
 
 func (c *controller) BackPopulate(key string) error {
+	ctx := context.Background()
 	pPV, err := c.pvLister.Get(key)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -73,12 +74,15 @@ func (c *controller) BackPopulate(key string) error {
 		return pkgerr.Wrapf(err, "failed to create client from cluster %s config", clusterName)
 	}
 
-	vPVObj, err := c.MultiClusterController.Get(clusterName, "", key)
-	if err != nil {
+	vPV := &v1.PersistentVolume{}
+	objectKey := types.NamespacedName{Namespace: "", Name: key}
+	if err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vPV); err != nil {
 		if errors.IsNotFound(err) {
 			// Create a new pv with bound claim in tenant master
-			vPVC, err := tenantClient.CoreV1().PersistentVolumeClaims(vNamespace).Get(context.TODO(), pPVC.Name, metav1.GetOptions{})
-			if err != nil {
+
+			vPVC := &v1.PersistentVolumeClaim{}
+			objectKey := types.NamespacedName{Namespace: vNamespace, Name: pPVC.Name}
+			if err := tenantClient.Get(ctx, objectKey, vPVC); err != nil {
 				// If corresponding pvc does not exist in tenant, we'll let checker fix any possible race.
 				klog.Errorf("Cannot find the bound pvc %s/%s in tenant cluster %s for pv %v", vNamespace, pPVC.Name, clusterName, pPV)
 				return nil
@@ -87,9 +91,8 @@ func (c *controller) BackPopulate(key string) error {
 			if err != nil {
 				return err
 			}
-			vPV := conversion.BuildVirtualPersistentVolume(clusterName, vcNS, vcName, pPV, vPVC)
-			_, err = tenantClient.CoreV1().PersistentVolumes().Create(context.TODO(), vPV, metav1.CreateOptions{})
-			if err != nil {
+			vPV = conversion.BuildVirtualPersistentVolume(clusterName, vcNS, vcName, pPV, vPVC)
+			if err = tenantClient.Create(ctx, vPV); err != nil {
 				return err
 			}
 			return nil
@@ -97,7 +100,6 @@ func (c *controller) BackPopulate(key string) error {
 		return err
 	}
 
-	vPV := vPVObj.(*v1.PersistentVolume)
 	if vPV.Annotations[constants.LabelUID] != string(pPV.UID) {
 		return fmt.Errorf("vPV %s in cluster %s delegated UID is different from pPV.", vPV.Name, clusterName)
 	}
@@ -107,8 +109,7 @@ func (c *controller) BackPopulate(key string) error {
 	if updatedPVSpec != nil {
 		newPV := vPV.DeepCopy()
 		newPV.Spec = *updatedPVSpec
-		_, err := tenantClient.CoreV1().PersistentVolumes().Update(context.TODO(), newPV, metav1.UpdateOptions{})
-		if err != nil {
+		if err := tenantClient.Update(ctx, newPV); err != nil {
 			return err
 		}
 	}

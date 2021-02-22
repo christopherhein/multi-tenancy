@@ -26,10 +26,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/conversion"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/metrics"
@@ -64,6 +67,7 @@ type Candidate struct {
 }
 
 func (c *controller) vNodeGCDo() {
+	ctx := context.Background()
 	candidates := func() []Candidate {
 		c.Lock()
 		defer c.Unlock()
@@ -93,13 +97,13 @@ func (c *controller) vNodeGCDo() {
 		wg.Add(1)
 		go func(cluster, nodeName string) {
 			defer wg.Done()
-			c.deleteClusterVNode(cluster, nodeName)
+			c.deleteClusterVNode(ctx, cluster, nodeName)
 		}(candidate.cluster, candidate.nodeName)
 	}
 	wg.Wait()
 }
 
-func (c *controller) deleteClusterVNode(cluster, nodeName string) {
+func (c *controller) deleteClusterVNode(ctx context.Context, cluster, nodeName string) {
 	tenantClient, err := c.MultiClusterController.GetClusterClient(cluster)
 	if err != nil {
 		klog.Infof("cluster is removed, clear clusterVNodeGCMap entry for cluster %s", cluster)
@@ -108,16 +112,17 @@ func (c *controller) deleteClusterVNode(cluster, nodeName string) {
 		c.Unlock()
 		return
 	}
-	opts := metav1.NewDeleteOptions(0)
-	opts.PropagationPolicy = &constants.DefaultDeletionPolicy
 
-	tenantClient.CoreV1().Nodes().Delete(context.TODO(), nodeName, *opts)
-	// We need to double check here.
-	if _, err := tenantClient.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{}); err != nil {
-		if !errors.IsNotFound(err) {
-			// If we cannot get the state from tenant apiserver, retry
-			return
-		}
+	node := &v1.Node{}
+	objectKey := types.NamespacedName{Name: nodeName}
+	if err := tenantClient.Get(ctx, objectKey, node); err != nil && !errors.IsNotFound(err) {
+		return
+	}
+
+	if err := retry.OnError(retry.DefaultRetry, func(err error) bool { return true }, func() error {
+		return tenantClient.Delete(ctx, node)
+	}); err != nil {
+		return
 	}
 
 	c.Lock()
@@ -128,6 +133,7 @@ func (c *controller) deleteClusterVNode(cluster, nodeName string) {
 // PatrollerDo checks to see if pods in super master informer cache and tenant master
 // keep consistency.
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.Infof("tenant masters has no clusters, give up period checker")
@@ -144,8 +150,8 @@ func (c *controller) PatrollerDo() {
 		wg.Add(1)
 		go func(clusterName string) {
 			defer wg.Done()
-			c.checkPodsOfTenantCluster(clusterName)
-			c.checkNodesOfTenantCluster(clusterName)
+			c.checkPodsOfTenantCluster(ctx, clusterName)
+			c.checkNodesOfTenantCluster(ctx, clusterName)
 		}(clusterName)
 	}
 	wg.Wait()
@@ -163,12 +169,13 @@ func (c *controller) PatrollerDo() {
 		}
 
 		shouldDelete := false
-		vPodObj, err := c.MultiClusterController.Get(clusterName, vNamespace, pPod.Name)
+		vPod := &v1.Pod{}
+		objectKey := types.NamespacedName{Namespace: vNamespace, Name: pPod.Name}
+		err := c.MultiClusterController.Get(ctx, clusterName, objectKey, vPod)
 		if errors.IsNotFound(err) && pPod.DeletionTimestamp == nil {
 			shouldDelete = true
 		}
 		if err == nil {
-			vPod := vPodObj.(*v1.Pod)
 			if pPod.Annotations[constants.LabelUID] != string(vPod.UID) {
 				shouldDelete = true
 				klog.Warningf("Found pPod %s/%s delegated UID is different from tenant object.", pPod.Namespace, pPod.Name)
@@ -210,23 +217,26 @@ func (c *controller) PatrollerDo() {
 	metrics.CheckerMissMatchStats.WithLabelValues("UWMetaMissMatchedPods").Set(float64(numUWMetaMissMatchedPods))
 }
 
-func (c *controller) forceDeletevPod(clusterName string, vPod *v1.Pod, graceful bool) {
-	client, err := c.MultiClusterController.GetClusterClient(clusterName)
+func (c *controller) forceDeletevPod(ctx context.Context, clusterName string, vPod *v1.Pod, graceful bool) {
+	tenantClient, err := c.MultiClusterController.GetClusterClient(clusterName)
 	if err != nil {
 		klog.Errorf("error getting cluster %s clientset: %v", clusterName, err)
 	} else {
-		var deleteOptions *metav1.DeleteOptions
+		deleteOptions := &client.DeleteOptions{
+			Preconditions: metav1.NewUIDPreconditions(string(vPod.UID)),
+		}
 		if graceful {
 			gracePeriod := int64(minimumGracePeriodInSeconds)
 			if vPod.Spec.TerminationGracePeriodSeconds != nil {
 				gracePeriod = *vPod.Spec.TerminationGracePeriodSeconds
 			}
-			deleteOptions = metav1.NewDeleteOptions(gracePeriod)
+			deleteOptions.GracePeriodSeconds = &gracePeriod
 		} else {
-			deleteOptions = metav1.NewDeleteOptions(0)
+			gracePeriod := int64(0)
+			deleteOptions.GracePeriodSeconds = &gracePeriod
 		}
-		deleteOptions.Preconditions = metav1.NewUIDPreconditions(string(vPod.UID))
-		if err = client.CoreV1().Pods(vPod.Namespace).Delete(context.TODO(), vPod.Name, *deleteOptions); err != nil {
+
+		if err = tenantClient.Delete(ctx, vPod, deleteOptions); err != nil {
 			klog.Errorf("error deleting pod %v/%v in cluster %s: %v", vPod.Namespace, vPod.Name, clusterName, err)
 		} else if vPod.Spec.NodeName != "" {
 			c.updateClusterVNodePodMap(clusterName, vPod.Spec.NodeName, string(vPod.UID), reconciler.DeleteEvent)
@@ -235,14 +245,13 @@ func (c *controller) forceDeletevPod(clusterName string, vPod *v1.Pod, graceful 
 }
 
 // checkPodsOfTenantCluster checks to see if pods in specific cluster keeps consistency.
-func (c *controller) checkPodsOfTenantCluster(clusterName string) {
-	listObj, err := c.MultiClusterController.List(clusterName)
-	if err != nil {
+func (c *controller) checkPodsOfTenantCluster(ctx context.Context, clusterName string) {
+	podList := &v1.PodList{}
+	if err := c.MultiClusterController.List(ctx, clusterName, podList); err != nil {
 		klog.Errorf("error listing pods from cluster %s informer cache: %v", clusterName, err)
 		return
 	}
 	klog.V(4).Infof("check pods consistency in cluster %s", clusterName)
-	podList := listObj.(*v1.PodList)
 	for i, vPod := range podList.Items {
 		if vPod.Spec.NodeName != "" && !isPodScheduled(&vPod) {
 			// We should skip pods with NodeName set in the spec
@@ -259,13 +268,13 @@ func (c *controller) checkPodsOfTenantCluster(clusterName string) {
 			// pPod not found and vPod is under deletion, we need to delete vPod manually
 			if vPod.DeletionTimestamp != nil {
 				// since pPod not found in super master, we can force delete vPod
-				c.forceDeletevPod(clusterName, &vPod, false)
+				c.forceDeletevPod(ctx, clusterName, &vPod, false)
 			} else {
 				// pPod not found and vPod still exists, the pPod may be deleted manually or by controller pod eviction.
 				// If the vPod has not been bound yet, we can create pPod again.
 				// If the vPod has been bound, we'd better delete the vPod since the new pPod may have a different nodename.
 				if isPodScheduled(&vPod) {
-					c.forceDeletevPod(clusterName, &vPod, false)
+					c.forceDeletevPod(ctx, clusterName, &vPod, false)
 					metrics.CheckerRemedyStats.WithLabelValues("DeletedTenantPodsDueToSuperEviction").Inc()
 				} else {
 					if err := c.MultiClusterController.RequeueObject(clusterName, &podList.Items[i]); err != nil {
@@ -291,7 +300,7 @@ func (c *controller) checkPodsOfTenantCluster(clusterName string) {
 			// For example, if pPod is deleted just before uws tries to bind the vPod and dws gets a request from checker or
 			// user update at the same time, a new pPod is going to be created potentially in a different node.
 			// However, uws bound vPod to a wrong node already. There is no easy remediation besides deleting tenant pod.
-			c.forceDeletevPod(clusterName, &vPod, true)
+			c.forceDeletevPod(ctx, clusterName, &vPod, true)
 			klog.Errorf("Found pPod %s/%s nodename is different from tenant pod nodename, delete the vPod.", targetNamespace, pPod.Name)
 			metrics.CheckerRemedyStats.WithLabelValues("DeletedTenantPodsDueToNodeMissMatch").Inc()
 			continue
@@ -339,13 +348,13 @@ func (c *controller) checkPodsOfTenantCluster(clusterName string) {
 // Note that this method can be expensive since it cannot leverage pod mccontroller informer cache. The List query
 // goes to tenant master directly. If this method causes performance issue, we should consider moving it to another
 // periodic thread with a larger check interval.
-func (c *controller) checkNodesOfTenantCluster(clusterName string) {
-	listObj, err := c.MultiClusterController.ListByObjectType(clusterName, &v1.Node{})
-	if err != nil {
+func (c *controller) checkNodesOfTenantCluster(ctx context.Context, clusterName string) {
+	nodeList := &v1.NodeList{}
+	if err := c.MultiClusterController.List(ctx, clusterName, nodeList); err != nil {
 		klog.Errorf("failed to list vNode from cluster %s config: %v", clusterName, err)
 		return
 	}
-	nodeList := listObj.(*v1.NodeList)
+
 	for _, vNode := range nodeList.Items {
 		if vNode.Labels[constants.LabelVirtualNode] != "true" {
 			continue

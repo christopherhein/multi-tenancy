@@ -29,7 +29,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -43,7 +43,6 @@ import (
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/metrics"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/util/featuregate"
-	utilscheme "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/util/scheme"
 	utilconstants "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/util/constants"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/util/errors"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/util/fairqueue"
@@ -60,7 +59,7 @@ type MultiClusterController struct {
 	sync.Mutex
 
 	// objectType is the type of object to watch.  e.g. &v1.Pod{}
-	objectType runtime.Object
+	objectType client.Object
 
 	// objectKind is the kind of target object this controller watched.
 	objectKind string
@@ -97,16 +96,16 @@ type Cache interface {
 
 // Lister interface is used to get the CRD object that abstracts the cluster.
 type Getter interface {
-	GetObject(string, string) (runtime.Object, error)
+	GetObject(string, string) (client.Object, error)
 }
 
 // ClusterInterface decouples the controller package from the cluster package.
 type ClusterInterface interface {
 	GetClusterName() string
 	GetOwnerInfo() (string, string, string)
-	GetObject() (runtime.Object, error)
-	AddEventHandler(runtime.Object, clientgocache.ResourceEventHandler) error
-	GetInformer(objectType runtime.Object) (cache.Informer, error)
+	GetObject() (client.Object, error)
+	AddEventHandler(client.Object, clientgocache.ResourceEventHandler) error
+	GetInformer(objectType client.Object) (cache.Informer, error)
 	GetClientSet() (clientset.Interface, error)
 	GetDelegatingClient() (client.Client, error)
 	GetRestConfig() *rest.Config
@@ -114,7 +113,7 @@ type ClusterInterface interface {
 }
 
 // NewMCController creates a new MultiClusterController.
-func NewMCController(objectType, objectListType runtime.Object, rc reconciler.DWReconciler, opts ...OptConfig) (*MultiClusterController, error) {
+func NewMCController(objectType client.Object, objectListType client.ObjectList, rc reconciler.DWReconciler, opts ...OptConfig) (*MultiClusterController, error) {
 	kinds, _, err := scheme.Scheme.ObjectKinds(objectType)
 	if err != nil || len(kinds) == 0 {
 		return nil, fmt.Errorf("mccontroller: unknown object kind %+v", objectType)
@@ -132,8 +131,6 @@ func NewMCController(objectType, objectListType runtime.Object, rc reconciler.DW
 			Queue:                   fairqueue.NewRateLimitingFairQueue(),
 		},
 	}
-
-	utilscheme.Scheme.AddKnownTypePair(objectType, objectListType)
 
 	for _, opt := range opts {
 		opt(&c.Options)
@@ -223,75 +220,33 @@ func (c *MultiClusterController) GetObjectKind() string {
 }
 
 // Get returns object with specific cluster, namespace and name.
-func (c *MultiClusterController) Get(clusterName, namespace, name string) (interface{}, error) {
+func (c *MultiClusterController) Get(ctx context.Context, clusterName string, namespaceName client.ObjectKey, object client.Object) error {
 	cluster := c.getCluster(clusterName)
 	if cluster == nil {
-		return nil, errors.NewClusterNotFound(clusterName)
+		return errors.NewClusterNotFound(clusterName)
 	}
-	instance := utilscheme.Scheme.NewObject(c.objectType)
-	delegatingClient, err := cluster.GetDelegatingClient()
-	if err != nil {
-		return nil, err
-	}
-	err = delegatingClient.Get(context.TODO(), client.ObjectKey{
-		Namespace: namespace,
-		Name:      name,
-	}, instance)
-	return instance, err
-}
 
-// GetByObjectType returns object with specific cluster, namespace and name and object type
-func (c *MultiClusterController) GetByObjectType(clusterName, namespace, name string, objectType runtime.Object) (interface{}, error) {
-	cluster := c.getCluster(clusterName)
-	if cluster == nil {
-		return nil, errors.NewClusterNotFound(clusterName)
-	}
-	instance := utilscheme.Scheme.NewObject(objectType)
-	if instance == nil {
-		return nil, fmt.Errorf("the object type %v is not supported by mccontroller", objectType)
-	}
 	delegatingClient, err := cluster.GetDelegatingClient()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	err = delegatingClient.Get(context.TODO(), client.ObjectKey{
-		Namespace: namespace,
-		Name:      name,
-	}, instance)
-	return instance, err
+	err = delegatingClient.Get(ctx, namespaceName, object)
+	return err
 }
 
 // List returns a list of objects with specific cluster.
-func (c *MultiClusterController) List(clusterName string, opts ...client.ListOption) (interface{}, error) {
+func (c *MultiClusterController) List(ctx context.Context, clusterName string, objectList client.ObjectList, opts ...client.ListOption) error {
 	cluster := c.getCluster(clusterName)
 	if cluster == nil {
-		return nil, errors.NewClusterNotFound(clusterName)
+		return errors.NewClusterNotFound(clusterName)
 	}
-	instanceList := utilscheme.Scheme.NewObjectList(c.objectType)
-	delegatingClient, err := cluster.GetDelegatingClient()
-	if err != nil {
-		return nil, err
-	}
-	err = delegatingClient.List(context.TODO(), instanceList, opts...)
-	return instanceList, err
-}
 
-// ListByObjectType returns a list of objects with specific cluster and object type.
-func (c *MultiClusterController) ListByObjectType(clusterName string, objectType runtime.Object, opts ...client.ListOption) (interface{}, error) {
-	cluster := c.getCluster(clusterName)
-	if cluster == nil {
-		return nil, errors.NewClusterNotFound(clusterName)
-	}
-	instanceList := utilscheme.Scheme.NewObjectList(objectType)
-	if instanceList == nil {
-		return nil, fmt.Errorf("the object type %v is not supported by mccontroller", objectType)
-	}
 	delegatingClient, err := cluster.GetDelegatingClient()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	err = delegatingClient.List(context.TODO(), instanceList, opts...)
-	return instanceList, err
+	err = delegatingClient.List(ctx, objectList, opts...)
+	return err
 }
 
 func (c *MultiClusterController) getCluster(clusterName string) ClusterInterface {
@@ -301,15 +256,24 @@ func (c *MultiClusterController) getCluster(clusterName string) ClusterInterface
 }
 
 // GetClusterClient returns the cluster's clientset client for direct access to tenant apiserver
-func (c *MultiClusterController) GetClusterClient(clusterName string) (clientset.Interface, error) {
+func (c *MultiClusterController) GetClusterClient(clusterName string) (client.Client, error) {
 	cluster := c.getCluster(clusterName)
 	if cluster == nil {
 		return nil, errors.NewClusterNotFound(clusterName)
 	}
-	return cluster.GetClientSet()
+	return cluster.GetDelegatingClient()
 }
 
-func (c *MultiClusterController) GetClusterObject(clusterName string) (runtime.Object, error) {
+// GetClusterRestConfig returns the cluster's clientset client for direct access to tenant apiserver
+func (c *MultiClusterController) GetClusterRestConfig(clusterName string) (*rest.Config, error) {
+	cluster := c.getCluster(clusterName)
+	if cluster == nil {
+		return nil, errors.NewClusterNotFound(clusterName)
+	}
+	return cluster.GetRestConfig(), nil
+}
+
+func (c *MultiClusterController) GetClusterObject(clusterName string) (client.Object, error) {
 	cluster := c.getCluster(clusterName)
 	if cluster == nil {
 		return nil, errors.NewClusterNotFound(clusterName)
@@ -353,7 +317,7 @@ func (c *MultiClusterController) GetClusterNames() []string {
 //
 // The resulting event will be created in the same namespace as the reference object.
 // TODO(zhuangqh): consider maintain an event sink for each tenant.
-func (c *MultiClusterController) Eventf(clusterName string, ref *v1.ObjectReference, eventtype string, reason, messageFmt string, args ...interface{}) error {
+func (c *MultiClusterController) Eventf(ctx context.Context, clusterName string, ref *v1.ObjectReference, eventtype string, reason, messageFmt string, args ...interface{}) error {
 	tenantClient, err := c.GetClusterClient(clusterName)
 	if err != nil {
 		return fmt.Errorf("failed to create client from cluster %s config: %v", clusterName, err)
@@ -376,8 +340,8 @@ func (c *MultiClusterController) Eventf(clusterName string, ref *v1.ObjectRefere
 		LastTimestamp:       eventTime,
 		ReportingController: "vc-syncer",
 	}
-	_, err = tenantClient.CoreV1().Events(namespace).Create(context.TODO(), event, metav1.CreateOptions{})
-	return err
+
+	return tenantClient.Create(ctx, event)
 }
 
 // RequeueObject requeues the cluster object, thus reconcileHandler can reconcile it again.
@@ -502,6 +466,7 @@ func (c *MultiClusterController) processNextWorkItem() bool {
 }
 
 func (c *MultiClusterController) FilterObjectFromSchedulingResult(req reconciler.Request) bool {
+	ctx := context.Background()
 	var nsName string
 	if c.objectKind == "Namespace" {
 		nsName = req.Name
@@ -509,12 +474,12 @@ func (c *MultiClusterController) FilterObjectFromSchedulingResult(req reconciler
 		nsName = req.Namespace
 	}
 
-	if filterSuperClusterRelatedObject(c, req.ClusterName, nsName) {
+	if filterSuperClusterRelatedObject(ctx, c, req.ClusterName, nsName) {
 		return true
 	}
 
 	if c.objectKind == "Pod" {
-		if filterSuperClusterSchedulePod(c, req) {
+		if filterSuperClusterSchedulePod(ctx, c, req) {
 			return true
 		}
 	}
@@ -522,28 +487,30 @@ func (c *MultiClusterController) FilterObjectFromSchedulingResult(req reconciler
 	return false
 }
 
-func filterSuperClusterRelatedObject(c *MultiClusterController, clusterName, nsName string) bool {
-	nsObj, err := c.GetByObjectType(clusterName, "", nsName, &v1.Namespace{})
+func filterSuperClusterRelatedObject(ctx context.Context, c *MultiClusterController, clusterName, nsName string) bool {
+	ns := &v1.Namespace{}
+	objectKey := types.NamespacedName{Namespace: "", Name: nsName}
+	err := c.Get(ctx, clusterName, objectKey, ns)
 	if err != nil {
 		klog.Errorf("failed to get ns %s of cluster %s: %v", nsName, clusterName, err)
 		return true
 	}
 
-	if IsNamespaceScheduledToCluster(nsObj.(*v1.Namespace), utilconstants.SuperClusterID) != nil {
+	if IsNamespaceScheduledToCluster(ns, utilconstants.SuperClusterID) != nil {
 		return true
 	}
 
 	return false
 }
 
-func filterSuperClusterSchedulePod(c *MultiClusterController, req reconciler.Request) bool {
-	podObj, err := c.GetByObjectType(req.ClusterName, req.Namespace, req.Name, &v1.Pod{})
-	if err != nil {
+func filterSuperClusterSchedulePod(ctx context.Context, c *MultiClusterController, req reconciler.Request) bool {
+	pod := &v1.Pod{}
+	if err := c.Get(ctx, req.ClusterName, req.NamespacedName, pod); err != nil {
 		klog.Errorf("failed to get pod %+v: %v", req, err)
 		return true
 	}
 
-	cname, ok := podObj.(*v1.Pod).GetAnnotations()[utilconstants.LabelScheduledCluster]
+	cname, ok := pod.GetAnnotations()[utilconstants.LabelScheduledCluster]
 	if !ok {
 		return true
 	}

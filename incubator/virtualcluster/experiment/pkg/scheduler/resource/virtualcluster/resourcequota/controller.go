@@ -17,6 +17,7 @@ limitations under the License.
 package resourcequota
 
 import (
+	"context"
 	"fmt"
 
 	v1 "k8s.io/api/core/v1"
@@ -80,6 +81,7 @@ func (c *controller) GetListener() listener.ClusterChangeListener {
 }
 
 func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, error) {
+	ctx := context.Background()
 	klog.Infof("reconcile resource quota %s/%s for virtual cluster %s", request.Namespace, request.Namespace, request.ClusterName)
 
 	// forward the request to namespace reconciler
@@ -88,11 +90,11 @@ func (c *controller) Reconcile(request reconciler.Request) (reconciler.Result, e
 		panic("namespace mccontroller is necessary")
 	}
 
-	nsObj, err := c.MultiClusterController.GetByObjectType(request.ClusterName, "", request.Namespace, &v1.Namespace{})
-	if err != nil {
+	namespace := &v1.Namespace{}
+	if err := c.MultiClusterController.Get(ctx, request.ClusterName, request.NamespacedName, namespace); err != nil {
 		return reconciler.Result{Requeue: true}, fmt.Errorf("failed to get namespace %s in %s: %v", request.Namespace, request.ClusterName, err)
 	}
-	namespace := nsObj.(*v1.Namespace)
+
 	if err := nsWatcher.GetMCController().RequeueObject(request.ClusterName, namespace); err != nil {
 		return reconciler.Result{Requeue: true}, fmt.Errorf("failed to requeue namespace %s in %s: %v", request.Namespace, request.ClusterName, err)
 	}

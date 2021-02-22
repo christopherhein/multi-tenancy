@@ -48,9 +48,9 @@ import (
 	"k8s.io/client-go/util/cert"
 	"k8s.io/client-go/util/certificate/csr"
 	"k8s.io/client-go/util/keyutil"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 
 	tenancyv1alpha1 "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/controller/constants"
@@ -71,7 +71,7 @@ const (
 
 var (
 	VCWebhookServiceNs string
-	log                = logf.Log.WithName("virtualcluster-webhook")
+	log                = ctrl.Log.WithName("virtualcluster-webhook")
 )
 
 func init() {
@@ -199,15 +199,10 @@ func createValidatingWebhookConfiguration(client client.Client) error {
 
 // genCertificate generates the serving cerficiate for the webhook server
 func genCertificate(mgr manager.Manager, certDir string) error {
-	// client-go client for generating certificate
-	clientSet, err := kubernetes.NewForConfig(mgr.GetConfig())
-	if err != nil {
-		return fmt.Errorf("fail to generate the clientset: %s", err)
-	}
-	csrClient := clientSet.CertificatesV1beta1().CertificateSigningRequests()
-
+	clt := mgr.GetClient()
 	// 1. delete the VC CSR if exist
-	if err := delVCWebhookCSRIfExist(csrClient); err != nil {
+
+	if err := delVCWebhookCSRIfExist(clt); err != nil {
 		return fmt.Errorf("fail to delete existing webhook: %s", err)
 	}
 	// 2. generate csr
@@ -217,11 +212,11 @@ func genCertificate(mgr manager.Manager, certDir string) error {
 	}
 
 	// 3. approve the csr
-	go approveVCWebhookCSR(csrClient)
+	go approveVCWebhookCSR(clt)
 
 	// 4. submit csr and wait for it to be signed
 	// NOTE this step will block until the CSR is issued
-	csrPEM, err = submitCSRAndWait(csrClient, csrPEM, privateKey)
+	csrPEM, err = submitCSRAndWait(clt, csrPEM, privateKey)
 	if err != nil {
 		return fmt.Errorf("fail to submit CSR: %s", err)
 	}
@@ -235,8 +230,9 @@ func genCertificate(mgr manager.Manager, certDir string) error {
 }
 
 // delVCWebhookCSRIfExist deletes the validatingwebhookconfiguration/<VCWebhookCfgName> if exist
-func delVCWebhookCSRIfExist(csrClient certificatesclient.CertificateSigningRequestInterface) error {
-	if err := csrClient.Delete(context.TODO(), VCWebhookCSRName, metav1.DeleteOptions{}); err != nil {
+func delVCWebhookCSRIfExist(clt client.Client) error {
+	if clt.Get(context.TODO())
+	if err := clt.Delete(context.TODO(), VCWebhookCSRName, metav1.DeleteOptions{}); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return err
 		}
@@ -248,8 +244,9 @@ func delVCWebhookCSRIfExist(csrClient certificatesclient.CertificateSigningReque
 // approveVCWebhookCSR approves the first observered CSR whose name is <VCWebhookCSRName>,
 // CommonName is <VCWebhookCertCommonName>, and Organization is <VCWebhookCertOrg>
 func approveVCWebhookCSR(csrClient certificatesclient.CertificateSigningRequestInterface) {
-	_, _ = watchtools.ListWatchUntil(
+	_, _ = watchtools.Until(
 		context.Background(),
+		"0",
 		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 				return csrClient.List(context.TODO(), options)
@@ -400,22 +397,22 @@ func genCertAndKeyFile(certData, keyData []byte, certDir string) error {
 func submitCSRAndWait(csrClient certificatesclient.CertificateSigningRequestInterface,
 	csrPEM []byte,
 	privateKey interface{}) ([]byte, error) {
-	req, err := csr.RequestCertificate(
+	reqName, reqUID, err := csr.RequestCertificate(
 		csrClient, csrPEM, VCWebhookCSRName, "kubernetes.io/legacy-unknown",
 		[]certificates.KeyUsage{certificates.UsageServerAuth},
 		privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("fail to request certificate: %s", err)
 	}
-	log.Info("CSR request submitted, will wait 2 seconds for it to be signed", "CSR reqest", req.GetName())
+	log.Info("CSR request submitted, will wait 2 seconds for it to be signed", "CSR reqest", reqName)
 	timeoutCtx, cancelFn := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelFn()
-	crtPEM, err := csr.WaitForCertificate(timeoutCtx, csrClient, req)
+	crtPEM, err := csr.WaitForCertificate(timeoutCtx, csrClient, reqName, reqUID)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Certificate request was not signed: %v", err))
 		return nil, nil
 	}
-	log.Info("CSR is signed", "CSR reqest", req.GetName())
+	log.Info("CSR is signed", "CSR reqest", reqName)
 	return crtPEM, nil
 }
 

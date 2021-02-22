@@ -81,6 +81,7 @@ func (c *controller) shouldBeGarbageCollected(ns *v1.Namespace) bool {
 }
 
 func (c *controller) PatrollerDo() {
+	ctx := context.Background()
 	clusterNames := c.MultiClusterController.GetClusterNames()
 	if len(clusterNames) == 0 {
 		klog.V(4).Infof("tenant masters has no clusters, still check pNamespace for gc purpose")
@@ -99,13 +100,14 @@ func (c *controller) PatrollerDo() {
 	blockedClusterSet := sets.NewString()
 	vSet := differ.NewDiffSet()
 	for _, cluster := range clusterNames {
-		listObj, err := c.MultiClusterController.List(cluster)
+		vList := &v1.NamespaceList{}
+		err := c.MultiClusterController.List(ctx, cluster, vList)
 		if err != nil {
 			klog.Errorf("error listing namespaces from cluster %s informer cache: %v", cluster, err)
 			blockedClusterSet.Insert(cluster)
 			continue
 		}
-		vList := listObj.(*v1.NamespaceList)
+
 		for i := range vList.Items {
 			if featuregate.DefaultFeatureGate.Enabled(featuregate.SuperClusterPooling) {
 				if err := mc.IsNamespaceScheduledToCluster(&vList.Items[i], utilconstants.SuperClusterID); err != nil {

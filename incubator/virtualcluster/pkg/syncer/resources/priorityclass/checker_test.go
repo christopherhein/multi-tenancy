@@ -24,7 +24,6 @@ import (
 
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/apis/tenancy/v1alpha1"
 	"sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/constants"
-	utilscheme "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/util/scheme"
 	util "sigs.k8s.io/multi-tenancy/incubator/virtualcluster/pkg/syncer/util/test"
 )
 
@@ -102,7 +101,6 @@ func TestPriorityClassPatrol(t *testing.T) {
 		},
 	}
 
-	utilscheme.Scheme.AddKnownTypePair(&v1.PriorityClass{}, &v1.PriorityClassList{})
 	for k, tc := range testcases {
 		t.Run(k, func(t *testing.T) {
 			tenantActions, superActions, err := util.RunPatrol(NewPriorityClassController, testTenant, tc.ExistingObjectInSuper, tc.ExistingObjectInTenant, nil, tc.WaitDWS, tc.WaitUWS, nil)
